@@ -1318,6 +1318,22 @@ if($GuiSmokeTest) {
         if($tree.Nodes.Count -ne 1) {throw '预览设备树房间数量异常。'}
         if($tree.Nodes[0].Nodes.Count -ne 2) {throw '预览设备树服务数量异常。'}
         if($grid.Rows.Count -lt 1) {throw '右侧设备详情没有加载。'}
+        $humidifierSample=Join-Path $PSScriptRoot '测试数据\组合加湿机_合成样本.csv'
+        Load-File $humidifierSample
+        if($tree.Nodes.Count -ne 3) {throw '双服务加湿机：房间数量异常。'}
+        foreach($testRoom in $tree.Nodes) {
+            if($testRoom.Nodes.Count -ne 1) {throw '双服务加湿机：配件数量异常。'}
+            $humidifierNode=$testRoom.Nodes[0]
+            if($humidifierNode.Tag.Count -ne 2) {throw "双服务加湿机：配件 $($humidifierNode.Text) 应有 2 行。"}
+            $tree.SelectedNode=$humidifierNode
+            Show-Device
+            if($grid.Rows.Count -ne 2) {
+                throw "双服务加湿机：$($humidifierNode.Text) 的 DataGridView 实际 $($grid.Rows.Count) 行，而 CSV 有 2 行。"
+            }
+            if(-not $grid.ColumnHeadersVisible -or $grid.Columns.Count -lt 9) {
+                throw '双服务加湿机：详情表头没有显示。'
+            }
+        }
         if((Normalize-Address '1 2 3') -cne '1/2/3') {throw '组地址空格输入转换失败。'}
         Write-Host 'GUI 自检通过：导入样本、房间树、设备详情和组地址规范化。'
         exit 0
