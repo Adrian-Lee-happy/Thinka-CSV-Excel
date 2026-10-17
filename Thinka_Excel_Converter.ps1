@@ -1081,7 +1081,7 @@ function Load-File([string]$path) {
     $script:baseline=Clone-Records $rows
     $script:projectPath=$path
     $script:sourceExcel=if($ext -eq '.xlsx'){$path}else{''}
-    $script:lastCsv=''
+    $script:lastCsv=if($ext -eq '.csv'){Record-Signature $rows}else{''}
     $script:lastExcel=if($ext -eq '.xlsx'){Record-Signature $rows}else{''}
     $script:undo.Clear();$script:redo.Clear()
     $filter.Text=''
