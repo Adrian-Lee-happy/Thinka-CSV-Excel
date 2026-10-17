@@ -1,0 +1,21 @@
+# Private Thinka / KNX project and customer data
+*.csv
+*.xlsx
+*.xls
+*.knxproj
+*.knxprod
+*.knxprojarchive
+
+# Generated output and local backups
+Thinka文件/
+修改/
+thinka/
+检查报告/
+*已写入UUID*
+*.bak
+*.log
+
+# Build archives and Windows-generated metadata
+*.zip
+Thumbs.db
+Desktop.ini
