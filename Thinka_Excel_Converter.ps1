@@ -497,6 +497,11 @@ function Save-EditedExcel([string]$source,[string]$destination,$records) {
         foreach($head in $script:cnHeaders) {
             if(-not $mapping.ContainsKey($head)) {throw "Excel 缺少必要列【$head】。"}
         }
+        if(-not $mapping.ContainsKey($script:groupHeader)) {
+            foreach($rec in $records) {
+                if($rec.Group -ne '') {throw 'Excel 缺少「配件组号」列，无法安全保存组合关系。请使用本工具生成的 Excel 模板。'}
+            }
+        }
         $rows=@{}
         foreach($node in $doc.SelectNodes('/x:worksheet/x:sheetData/x:row',$ns)) {$rows[[int]$node.GetAttribute('r')]=$node}
         foreach($rec in $records) {
@@ -1041,7 +1046,13 @@ function Do-Export([string]$kind) {
             return
         }
         if($kind -eq 'csv') {
-            $msg="准备生成 Thinka CSV。" + [Environment]::NewLine + "记录 $($checked.Rows)，服务 $($checked.Services)，提醒 $($checked.Warnings.Count)。" + [Environment]::NewLine + '确认导出？'
+            $msg="准备生成 Thinka CSV。" + [Environment]::NewLine + "记录 $($checked.Rows)，服务 $($checked.Services)，提醒 $($checked.Warnings.Count)。" + [Environment]::NewLine
+            if($checked.Warnings.Count -gt 0) {
+                $msg += '需要核对的提醒：' + [Environment]::NewLine
+                $msg += ((@($checked.Warnings | Select-Object -First 5)) -join [Environment]::NewLine)
+                $msg += [Environment]::NewLine
+            }
+            $msg += '确认导出？'
             if([Windows.Forms.MessageBox]::Show($msg,'确认导出','YesNo','Question') -ne 'Yes') {return}
             $res=Export-SafeCsv $script:projectPath $script:project ([bool]$generateAll.Checked)
             $script:lastCsv=Record-Signature $script:project
