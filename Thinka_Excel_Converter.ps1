@@ -1455,6 +1455,36 @@ if($GuiSmokeTest) {
                 throw '双服务加湿机：详情表头没有显示。'
             }
         }
+        # Regression: switch between the three humidifiers repeatedly and edit an
+        # address. DataGridView must not throw SetCurrentCellAddressCore on Rows.Clear,
+        # and the first two service rows must remain visible afterward.
+        for($cycle=0;$cycle -lt 12;$cycle++) {
+            foreach($roomToSelect in $tree.Nodes) {
+                $tree.SelectedNode=$roomToSelect.Nodes[0]
+                [Windows.Forms.Application]::DoEvents()
+                if($grid.Rows.Count -ne 2) {throw '切换加湿机时设备详情变空白。'}
+                if([string]$grid.Rows[0].Cells[3].Value -cne 'Switch' -or
+                   [string]$grid.Rows[1].Cells[3].Value -cne 'HumiditySensor') {
+                    throw '加湿机的 Switch/HumiditySensor 服务没有完整显示。'
+                }
+            }
+        }
+        $tree.SelectedNode=$tree.Nodes[0].Nodes[0]
+        [Windows.Forms.Application]::DoEvents()
+        $targetCell=$grid.Rows[0].Cells[6]
+        $grid.CurrentCell=$targetCell
+        if(-not $grid.BeginEdit($false)) {throw '无法开始编辑加湿机组地址。'}
+        $grid.EditingControl.Text='5 / 1 / 99'
+        if(-not $grid.EndEdit()) {throw '无法完成加湿机组地址编辑。'}
+        [Windows.Forms.Application]::DoEvents()
+        [Windows.Forms.Application]::DoEvents()
+        if($grid.Rows.Count -ne 2 -or [string]$grid.Rows[0].Cells[6].Value -cne '5/1/99') {
+            throw '地址编辑后加湿机详情未恢复，或新组地址没有正确保存。'
+        }
+        if($grid.Columns[3].Width -lt 180 -or $grid.Columns[5].Width -lt 280 -or
+           $grid.DefaultCellStyle.WrapMode -ne [Windows.Forms.DataGridViewTriState]::True) {
+            throw '列宽或文本换行设置没有生效。'
+        }
         if((Normalize-Address '1 2 3') -cne '1/2/3') {throw '组地址空格输入转换失败。'}
         Write-Host 'GUI 自检通过：导入样本、房间树、设备详情和组地址规范化。'
         exit 0
