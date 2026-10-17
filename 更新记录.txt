@@ -1,0 +1,13 @@
+v1.4.1（读取 Excel 修复）
+- 修复 SelectSingleNode 双参数调用报错。
+- 防止 PowerShell 将 XmlNamespaceManager 和 XmlDocument 枚举为其他对象。
+- 提前校验命名空间管理器类型，保持 CSV、UUID、组号及合规检查规则不变。
+- 文件名全部使用 ASCII，避免下载文件名百分号编码乱码。
+
+v1.4（性能优化版）
+- 去掉 Excel COM：不再启动 Excel，不再逐单元格远程读写。
+- XLSX 直接读写 Open XML；无需 Excel 环境即可完成转换及检查。
+- 保留之前的中文表头、12 列编辑 / 11 列输出、文本保护、组号、UUID 及静态检查逻辑。
+- “生成全部 UUID Excel”或输出带 ID 的副本时，只修改第一张工作表的 ID 单元格，其余工作表与压缩包组件保留。
+- 每次 GUI 操作显示耗时。
+- 新增“运行自检.cmd”，用户可在自己的 Windows 上进行基本往返自检与耗时测试。
