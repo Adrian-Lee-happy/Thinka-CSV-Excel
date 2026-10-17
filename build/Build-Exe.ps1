@@ -44,15 +44,15 @@ Import-Module -Name ps2exe -RequiredVersion $version -Force -ErrorAction Stop
 # Drawn locally with System.Drawing, no external assets/downloads.
 Add-Type -AssemblyName System.Drawing
 $iconPath = Join-Path $OutputDirectory 'Thinka.ico'
-$bitmap = New-Object System.Drawing.Bitmap(64,64)
+$bitmap = [System.Drawing.Bitmap]::new(64,64)
 $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
 $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-$bg = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(20,62,94))
-$paper = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(246,252,254))
-$teal = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(44,180,187))
-$gridPen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(117,156,176),2)
-$linePen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(73,217,220),4)
-$white = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::White)
+$bg = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(20,62,94))
+$paper = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(246,252,254))
+$teal = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(44,180,187))
+$gridPen = [System.Drawing.Pen]::new([System.Drawing.Color]::FromArgb(117,156,176),2)
+$linePen = [System.Drawing.Pen]::new([System.Drawing.Color]::FromArgb(73,217,220),4)
+$white = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::White)
 try {
     $graphics.Clear([System.Drawing.Color]::Transparent)
     $graphics.FillEllipse($bg,2,2,60,60)
