@@ -171,7 +171,12 @@ function Read-Xlsx([string]$path) {
             $values=@{}
             foreach($cell in $row.SelectNodes('x:c',$ns)) {
                 $col=Get-ColumnNumber ($cell.GetAttribute('r'))
-                if($columns.ContainsKey($col)) {$values[$columns[$col]]=Read-CellText $cell $ns $strings}
+                if($columns.ContainsKey($col)) {
+                    $name=$columns[$col]
+                    if($name -in $script:cnHeaders -or $name -eq $script:groupHeader -or $name -eq $script:orderHeader) {
+                        $values[$name]=Read-CellText $cell $ns $strings
+                    }
+                }
             }
             $v=[string[]]::new(11);$group='';$hasContent=$false
             if($seen.ContainsKey($script:groupHeader) -and $values.ContainsKey($script:groupHeader)) {
