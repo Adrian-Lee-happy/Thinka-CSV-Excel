@@ -44,8 +44,8 @@ Write-Host 'Building Windows GUI executable (no console)...'
 Invoke-PS2EXE -inputFile $source -outputFile $output -noConsole -STA -x64 `
     -title 'Thinka Excel Converter' `
     -product 'Thinka CSV Excel Converter' `
-    -description 'Thinka CSV to Chinese Excel converter with UUID grouping and validation' `
-    -version '1.4.1.0'
+    -description 'Thinka Excel bulk device editor with KNX preview and verified CSV export' `
+    -version '1.5.0.0'
 
 if (-not (Test-Path -LiteralPath $output -PathType Leaf)) {
     throw 'PS2EXE did not create an EXE file.'
