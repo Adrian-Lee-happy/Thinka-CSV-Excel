@@ -828,6 +828,10 @@ $script:lastCsv=''
 $script:undo=New-Object 'System.Collections.Generic.Stack[object]'
 $script:redo=New-Object 'System.Collections.Generic.Stack[object]'
 $script:drawing=$false
+$script:detailRefreshQueued=$false
+$script:rebuildQueued=$false
+$script:rebuildFocus=0
+$script:visibleRecordByLine=@{}
 function Record-Signature($rows) {
     $b=New-Object Text.StringBuilder
     foreach($r in $rows) {
@@ -988,6 +992,10 @@ $grid.RowHeadersVisible=$false
 $grid.AllowUserToAddRows=$false
 $grid.AllowUserToDeleteRows=$false
 $grid.AutoSizeColumnsMode='None'
+$grid.AutoGenerateColumns=$false
+$grid.AutoSizeRowsMode=[Windows.Forms.DataGridViewAutoSizeRowsMode]::AllCells
+$grid.DefaultCellStyle.WrapMode=[Windows.Forms.DataGridViewTriState]::True
+$grid.DefaultCellStyle.Padding=New-Object Windows.Forms.Padding(2,3,2,3)
 $grid.BackgroundColor=[Drawing.Color]::White
 $grid.ColumnHeadersVisible=$true
 $grid.ColumnHeadersHeight=34
@@ -1008,8 +1016,24 @@ foreach($name in @('行号','房间','服务名称','服务类型','特征或参
     [void]$grid.Columns.Add(('c'+$grid.Columns.Count),$name)
 }
 foreach($index in @(0,3,4,5)) {$grid.Columns[$index].ReadOnly=$true}
-$columnWidths=@(58,85,155,133,105,195,112,112,245)
-for($i=0;$i -lt $columnWidths.Length;$i++) {$grid.Columns[$i].Width=$columnWidths[$i]}
+# Prefer readable complete values with a horizontal scrollbar instead of ellipses.
+$columnWidths=@(65,115,210,205,190,310,155,155,295)
+for($i=0;$i -lt $columnWidths.Length;$i++) {
+    $grid.Columns[$i].DataPropertyName='Field'+$i
+    $grid.Columns[$i].Width=$columnWidths[$i]
+    $grid.Columns[$i].MinimumWidth=55
+    $grid.Columns[$i].DefaultCellStyle.WrapMode=[Windows.Forms.DataGridViewTriState]::True
+}
+$grid.ShowCellToolTips=$true
+$grid.Add_CellFormatting({
+    if($_.RowIndex -lt 0 -or $_.ColumnIndex -lt 0) {return}
+    $cell=$grid.Rows[$_.RowIndex].Cells[$_.ColumnIndex]
+    if($null -ne $cell.Value) {$cell.ToolTipText=[string]$cell.Value}
+})
+$grid.Add_DataError({
+    Write-Log ("表格单元格错误：行 {0}，列 {1}；{2}" -f $_.RowIndex,$_.ColumnIndex,$_.Exception.Message)
+    $_.ThrowException=$false
+})
 $grid.Columns[8].Visible=$false
 function Accessory-Key($rec) {
     $v=$rec.Values
@@ -1029,39 +1053,68 @@ function Find-Line([int]$line) {
     return $null
 }
 function Show-Device {
+    # Data-bound snapshots avoid Rows.Clear()/Rows.Add() reentrancy while
+    # DataGridView is committing a cell or changing the current row.
+    if($script:drawing) {return}
     $script:drawing=$true
-    $grid.SuspendLayout()
     try {
-        $grid.Rows.Clear()
         $node=$tree.SelectedNode
-        if($null -eq $node -or $node.Level -ne 1) {
-            $heading.Text='从左侧选择设备'
-            return
+        $dt=New-Object System.Data.DataTable
+        for($c=0;$c -lt 9;$c++) {
+            [void]$dt.Columns.Add(('Field'+$c),[string])
         }
+        $lookup=@{}
         $shown=0
-        foreach($rec in $node.Tag) {
-            if($null -eq $rec -or $null -eq $rec.Values -or $rec.Values.Length -ne 11) {
-                throw '设备记录缺少标准 11 列字段，无法显示。'
+        if($null -ne $node -and $node.Level -eq 1) {
+            foreach($rec in $node.Tag) {
+                if($null -eq $rec -or $null -eq $rec.Values -or $rec.Values.Length -ne 11) {
+                    throw '设备记录缺少标准 11 列字段，无法显示。'
+                }
+                $v=$rec.Values
+                $line=[string]$rec.Line
+                $cells=[object[]]@($line,$v[0],$v[2],$v[3],$v[4],$v[5],$v[6],$v[7],$v[1])
+                [void]$dt.Rows.Add($cells)
+                $lookup[$line]=$rec
+                $shown++
             }
-            $v=$rec.Values
-            $cells=[object[]]@($rec.Line,$v[0],$v[2],$v[3],$v[4],$v[5],$v[6],$v[7],$v[1])
-            $i=$grid.Rows.Add($cells)
-            $grid.Rows[$i].Tag=$rec
-            $shown++
+            $heading.Text=$node.Parent.Text+' / '+$node.Text+"    （$shown 行参数）"
+        } else {
+            $heading.Text='从左侧选择设备'
         }
-        $heading.Text=$node.Parent.Text+' / '+$node.Text+"    （$shown 行参数）"
+        $script:visibleRecordByLine=$lookup
+        $grid.DataSource=$dt
         if($grid.Rows.Count -gt 0) {
             try {$grid.FirstDisplayedScrollingRowIndex=0} catch {}
         }
+        $grid.Refresh()
     } catch {
-        $heading.Text='显示参数失败，请回到文件操作查看日志'
+        $heading.Text='参数显示失败，请看文件操作页的日志'
         Write-Log ('设备参数显示失败：'+$_.Exception.Message)
         [void][Windows.Forms.MessageBox]::Show($_.Exception.Message,'设备参数显示错误')
     } finally {
-        $grid.ResumeLayout($true)
-        $grid.Invalidate()
         $script:drawing=$false
     }
+}
+function Queue-DetailRefresh {
+    # Do not replace DataSource synchronously inside TreeView or grid callbacks.
+    if($script:detailRefreshQueued) {return}
+    if(-not $form.IsHandleCreated) {Show-Device;return}
+    $script:detailRefreshQueued=$true
+    [void]$form.BeginInvoke([System.Action]{
+        try {Show-Device}
+        finally {$script:detailRefreshQueued=$false}
+    })
+}
+function Queue-Rebuild([int]$line) {
+    # CellEndEdit / validation must return before changing the tree + grid.
+    $script:rebuildFocus=$line
+    if($script:rebuildQueued) {return}
+    if(-not $form.IsHandleCreated) {Rebuild-Tree $line;return}
+    $script:rebuildQueued=$true
+    [void]$form.BeginInvoke([System.Action]{
+        try {Rebuild-Tree $script:rebuildFocus}
+        finally {$script:rebuildQueued=$false}
+    })
 }
 function Show-Issues {
     $check=Check-Records (Clone-Records $script:project) $false $false
@@ -1112,7 +1165,7 @@ function Rebuild-Tree([int]$focusLine) {
         }
         if($null -ne $select) {$tree.SelectedNode=$select}
     } finally {$script:drawing=$false}
-    Show-Device
+    Queue-DetailRefresh
     [void](Show-Issues)
 }
 function Load-File([string]$path) {
@@ -1182,10 +1235,11 @@ function Normalize-Address([string]$text) {
     return $text
 }
 $grid.Add_CellEndEdit({
-    if($script:drawing) {return}
+    if($script:drawing -or $_.RowIndex -lt 0 -or $_.ColumnIndex -lt 0) {return}
     $idx=$_.ColumnIndex;$row=$grid.Rows[$_.RowIndex]
-    if($null -eq $row.Tag) {return}
-    $rec=$row.Tag
+    $line=[string]$row.Cells[0].Value
+    if(-not $script:visibleRecordByLine.ContainsKey($line)) {return}
+    $rec=$script:visibleRecordByLine[$line]
     $map=@{1=0;2=2;6=6;7=7;8=1}
     if(-not $map.ContainsKey($idx)) {return}
     if($idx -eq 8 -and -not $advanced.Checked) {return}
@@ -1203,7 +1257,7 @@ $grid.Add_CellEndEdit({
             if((Service-Key $item.Values) -ceq $key) {$item.Values[$map[$idx]]=$new}
         }
     } else {$rec.Values[$map[$idx]]=$new}
-    Rebuild-Tree $rec.Line
+    Queue-Rebuild $rec.Line
 })
 function Do-Undo([bool]$redo) {
     $from=if($redo){$script:redo}else{$script:undo}
@@ -1213,7 +1267,7 @@ function Do-Undo([bool]$redo) {
     $script:project=$from.Pop()
     Rebuild-Tree 0
 }
-$tree.Add_AfterSelect({if(-not $script:drawing){Show-Device}})
+$tree.Add_AfterSelect({if(-not $script:drawing){Queue-DetailRefresh}})
 $filter.Add_TextChanged({if(-not $script:drawing){Rebuild-Tree 0}})
 $advanced.Add_CheckedChanged({$grid.Columns[8].Visible=$advanced.Checked})
 $undoBtn.Add_Click({Do-Undo $false})
