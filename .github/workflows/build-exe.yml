@@ -41,8 +41,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           Copy-Item -LiteralPath ".\dist\Thinka_Excel_Converter.exe" -Destination $stage -ErrorAction Stop
           Copy-Item -LiteralPath ".\README.md" -Destination $stage -ErrorAction Stop
-          Copy-Item -LiteralPath ".\使用说明.txt" -Destination $stage -ErrorAction Stop
-          Copy-Item -LiteralPath ".\更新记录.txt" -Destination $stage -ErrorAction Stop
+          # Use wildcard to avoid non-ASCII literals in Windows PowerShell inline scripts.
+          Get-ChildItem -Path "." -Filter "*.txt" -File | Copy-Item -Destination $stage -ErrorAction Stop
           Compress-Archive -Path (Join-Path $stage '*') -DestinationPath ".\dist\Thinka_Excel_Converter_v1.4.1_EXE.zip" -Force
           if (-not (Test-Path ".\dist\Thinka_Excel_Converter_v1.4.1_EXE.zip")) { throw 'ZIP archive not created.' }
 
