@@ -1318,6 +1318,11 @@ if($GuiSmokeTest) {
         if($tree.Nodes.Count -ne 1) {throw '预览设备树房间数量异常。'}
         if($tree.Nodes[0].Nodes.Count -ne 2) {throw '预览设备树服务数量异常。'}
         if($grid.Rows.Count -lt 1) {throw '右侧设备详情没有加载。'}
+        $form.Show()
+        $form.Activate()
+        [Windows.Forms.Application]::DoEvents()
+        $tabs.SelectedTab=$pagePreview
+        [Windows.Forms.Application]::DoEvents()
         $humidifierSample=Join-Path $PSScriptRoot '测试数据\组合加湿机_合成样本.csv'
         Load-File $humidifierSample
         if($tree.Nodes.Count -ne 3) {throw '双服务加湿机：房间数量异常。'}
@@ -1329,6 +1334,13 @@ if($GuiSmokeTest) {
             Show-Device
             if($grid.Rows.Count -ne 2) {
                 throw "双服务加湿机：$($humidifierNode.Text) 的 DataGridView 实际 $($grid.Rows.Count) 行，而 CSV 有 2 行。"
+            }
+            [Windows.Forms.Application]::DoEvents()
+            if(-not $grid.Visible -or $grid.Width -lt 250 -or $grid.Height -lt 100) {
+                throw "双服务加湿机：详情表格不可见或尺寸异常。可见=$($grid.Visible)；尺寸=$($grid.Size)"
+            }
+            if($grid.DisplayedRowCount($false) -lt 2 -or $grid.GetRowDisplayRectangle(0,$false).Height -lt 15) {
+                throw "双服务加湿机：$($humidifierNode.Text) 的表格行没有实际显示。表格=$($grid.Bounds)；显示行数=$($grid.DisplayedRowCount($false))"
             }
             if(-not $grid.ColumnHeadersVisible -or $grid.Columns.Count -lt 9) {
                 throw '双服务加湿机：详情表头没有显示。'
