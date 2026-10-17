@@ -55,3 +55,11 @@
 ## 隐私和数据安全
 
 工具在本机处理文件，不需要上传到云服务。本仓库不存放客户 CSV、XLSX、KNX 工程和设备配置文件。
+
+## Windows EXE 版本（PS2EXE）
+
+- 进入仓库的 [Actions → Build Windows GUI EXE](https://github.com/Adrian-Lee-happy/Thinka-CSV-Excel/actions/workflows/build-exe.yml)，打开最新成功的构建，下载 **Thinka_Excel_Converter_v1.4.1_EXE** 附件。
+- 解压 ZIP 后双击 `Thinka_Excel_Converter.exe`，不再弹出 PowerShell 控制台。
+- 该 EXE 是 PS2EXE 对 PowerShell 脚本的封装，仍依赖 Windows 自带的 PowerShell 组件；无需安装 Python 或 Microsoft Excel。
+- 构建脚本在 `build/Build-Exe.ps1`，使用 PS2EXE 1.0.18。也可在 Windows PowerShell 5.1 下运行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build\Build-Exe.ps1 -InstallPs2Exe` 自行构建。
+- 已通过 Windows CI 源码自检与生成文件的 GUI 子系统检查；最终的鼠标拖放、操作界面及 Thinka 导入仍需在本地现场验证。
