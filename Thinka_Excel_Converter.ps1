@@ -440,8 +440,8 @@ function Write-Xlsx([string]$target,$records) {
                 foreach($rec in $records) {
                     $writer.WriteStartElement('row',$ns);$writer.WriteAttributeString('r',[string]$row)
                     Write-XlsxCell $writer ('A'+$row) ([string]$rec.Group) 2
-                    if([int]$rec.OriginOrder -gt 0) { Write-XlsxCell $writer ('M'+$row) ([string]$rec.OriginOrder) 0 }
                     for($c=0;$c -lt 11;$c++) { Write-XlsxCell $writer ((Get-ColumnName ($c+2))+$row) ([string]$rec.Values[$c]) 0 }
+                    if([int]$rec.OriginOrder -gt 0) { Write-XlsxCell $writer ('M'+$row) ([string]$rec.OriginOrder) 0 }
                     $writer.WriteEndElement();$row++
                 }
                 $writer.WriteEndElement()
@@ -1101,9 +1101,84 @@ $issueList.Add_DoubleClick({
         if($null -ne $node) {$tree.SelectedNode=$node}
     }
 })
-# Grouping actions will be provided after Windows GUI smoke tests.
-$groupBtn.Enabled=$false
-$separateBtn.Enabled=$false
+function Pick-Choice($choices,[string]$title) {
+    $dialog=New-Object Windows.Forms.Form
+    $dialog.Text=$title
+    $dialog.Size=New-Object Drawing.Size(530,380)
+    $dialog.StartPosition='CenterParent'
+    $list=New-Object Windows.Forms.ListBox
+    $list.Location=New-Object Drawing.Point(12,12)
+    $list.Size=New-Object Drawing.Size(485,270)
+    foreach($choice in $choices) {[void]$list.Items.Add($choice.Label)}
+    $dialog.Controls.Add($list)
+    $ok=New-Object Windows.Forms.Button
+    $ok.Text='确定'
+    $ok.Location=New-Object Drawing.Point(396,298)
+    $ok.DialogResult=[Windows.Forms.DialogResult]::OK
+    $dialog.Controls.Add($ok)
+    $dialog.AcceptButton=$ok
+    try {
+        if($dialog.ShowDialog($form) -eq [Windows.Forms.DialogResult]::OK -and $list.SelectedIndex -ge 0) {
+            return $choices[$list.SelectedIndex]
+        }
+    } finally {$dialog.Dispose()}
+    return $null
+}
+$groupBtn.Add_Click({
+    $selected=$tree.SelectedNode
+    if($null -eq $selected -or $selected.Level -ne 1) {return}
+    $choices=New-Object 'System.Collections.Generic.List[object]'
+    foreach($sibling in $selected.Parent.Nodes) {
+        if([object]::ReferenceEquals($sibling,$selected)) {continue}
+        [void]$choices.Add([pscustomobject]@{Label=$sibling.Text;Rows=$sibling.Tag})
+    }
+    if($choices.Count -eq 0) {[void][Windows.Forms.MessageBox]::Show('同一房间内没有其他可组合的配件。');return}
+    $picked=Pick-Choice $choices '选择要加入当前配件的服务'
+    if($null -eq $picked) {return}
+    $left=@($selected.Tag)
+    $right=@($picked.Rows)
+    $all=@($left)+@($right)
+    $ids=Unique-Strings @($all | ForEach-Object {$_.Values[1]})
+    if($ids.Length -gt 1) {
+        [void][Windows.Forms.MessageBox]::Show('这些服务含有不同的非空 UUID，请先核对；不能自动合并。','UUID 冲突')
+        return
+    }
+    $label=''
+    foreach($rec in $all) {if($rec.Group -ne '') {$label=$rec.Group;break}}
+    if(-not $label) {$label='组合'+[Guid]::NewGuid().ToString('N').Substring(0,8)}
+    Snapshot
+    $focus=$left[0].Line
+    foreach($rec in $all) {$rec.Group=$label}
+    Rebuild-Tree $focus
+})
+$separateBtn.Add_Click({
+    $selected=$tree.SelectedNode
+    if($null -eq $selected -or $selected.Level -ne 1) {return}
+    $services=New-Object 'System.Collections.Generic.List[object]'
+    $found=@{}
+    foreach($rec in $selected.Tag) {
+        $key=Service-Key $rec.Values
+        if($found.ContainsKey($key)) {continue}
+        $found[$key]=$true
+        [void]$services.Add([pscustomobject]@{
+            Label=$rec.Values[2]+' ('+$rec.Values[3]+')'
+            Key=$key
+            Line=$rec.Line
+        })
+    }
+    if($services.Count -le 1) {[void][Windows.Forms.MessageBox]::Show('当前配件只有一个服务，无需解除组合。');return}
+    $picked=Pick-Choice $services '选择要解除组合的服务'
+    if($null -eq $picked) {return}
+    if([Windows.Forms.MessageBox]::Show('解除组合会清空被拆分服务的 UUID，可能改变 HomeKit 中的配件身份。继续？','确认解除组合','YesNo','Warning') -ne 'Yes') {return}
+    Snapshot
+    foreach($rec in $script:project) {
+        if((Service-Key $rec.Values) -ceq $picked.Key) {
+            $rec.Group=''
+            $rec.Values[1]=''
+        }
+    }
+    Rebuild-Tree $picked.Line
+})
 foreach($element in @($pageFiles,$pagePreview)) {
     $element.AllowDrop=$true
     $element.Add_DragEnter({
