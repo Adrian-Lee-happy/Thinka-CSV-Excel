@@ -1,4 +1,4 @@
-﻿# Thinka Excel Converter v1.4.1 | Windows PowerShell 5.1 | Direct Open XML (no Excel COM)
+﻿ # Thinka Excel Converter v1.5 development | Windows PowerShell 5.1 | Direct Open XML (no Excel COM)
 # 11 original Thinka columns + one optional, Excel-only "配件组号" column.
 # The raw CSV parser/writer never converts KNX addresses to dates or numeric types.
 param([switch]$SelfTest)
@@ -12,6 +12,7 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 $script:rawHeaders = @('Room *','Accessory Id','Service Name *','Service Type *','Characteristic or Parameter','Characteristic or Parameter name *','read address','write address','manufacturer','model','serial number')
 $script:cnHeaders = @('房间 *','配件 ID','服务名称 *','服务类型 *','特征或参数','特征或参数名称 *','读取组地址','写入组地址','制造商','型号','序列号')
 $script:groupHeader = '配件组号'
+$script:orderHeader = '原始行序'
 $script:settingsPath = Join-Path $env:APPDATA 'ThinkaCsvConverter\output-folder.txt'
 $desktop = [Environment]::GetFolderPath('Desktop')
 $defaultFolder = Join-Path $desktop 'Thinka文件'
@@ -23,7 +24,7 @@ if ([IO.File]::Exists($script:settingsPath)) {
 
 function New-ResultRows { return ,(New-Object 'System.Collections.Generic.List[object]') }
 function New-Record([string[]]$values, [string]$group, [int]$line) {
-    return [pscustomobject]@{ Values=$values; Group=$group; Line=$line }
+    return [pscustomobject]@{ Values=$values; Group=$group; Line=$line; OriginOrder=($line-1) }
 }
 function Unique-Target([string]$folder,[string]$name,[string]$extension) {
     [void][IO.Directory]::CreateDirectory($folder)
@@ -148,37 +149,71 @@ function Read-Xlsx([string]$path) {
         $strings=Get-SharedStrings $zip
         $rowNodes=$doc.SelectNodes('/x:worksheet/x:sheetData/x:row',$ns)
         if($rowNodes.Count -eq 0) { throw 'Excel 工作表为空。' }
-        $header=@{}
-        foreach($cell in $rowNodes[0].SelectNodes('x:c',$ns)) { $header[(Get-ColumnNumber ($cell.GetAttribute('r')))]=Read-CellText $cell $ns $strings }
-        $offset=0
-        if($header.ContainsKey(1) -and $header[1] -ceq $script:groupHeader) {$offset=1}
-        for($c=0;$c -lt 11;$c++) {
-            $column=$c+1+$offset
-            $actual=if($header.ContainsKey($column)) {[string]$header[$column]} else {''}
-            if($actual -cne $script:cnHeaders[$c]) { throw "Excel 第 $column 列标题不符合模板。应为【$($script:cnHeaders[$c])】，实际为【$actual】。" }
+        $columns=@{}
+        $seen=@{}
+        foreach($cell in $rowNodes[0].SelectNodes('x:c',$ns)) {
+            $index=Get-ColumnNumber ($cell.GetAttribute('r'))
+            $name=(Read-CellText $cell $ns $strings).Trim()
+            if(-not $name) {continue}
+            if($seen.ContainsKey($name)) {throw "Excel 表头【$name】重复，请检查第 1 行。"}
+            $seen[$name]=$index
+            $columns[$index]=$name
+        }
+        foreach($head in $script:cnHeaders) {
+            if(-not $seen.ContainsKey($head)) {throw "Excel 缺少必需列【$head】，无法可靠转换。"}
         }
         $records=New-ResultRows
         foreach($row in $rowNodes) {
             $r=0
             if(-not [int]::TryParse($row.GetAttribute('r'),[ref]$r)) {continue}
             if($r -le 1) {continue}
-            if($r -gt 100000) {throw '检测到 Excel 使用区域超过10万行，请清除尾部多余格式后重试。'}
+            if($r -gt 100000) {throw 'Excel 使用区域超过10万行，请清理尾部空白格式。'}
             $values=@{}
             foreach($cell in $row.SelectNodes('x:c',$ns)) {
                 $col=Get-ColumnNumber ($cell.GetAttribute('r'))
-                if($col -le (11+$offset)) {$values[$col]=Read-CellText $cell $ns $strings}
+                if($columns.ContainsKey($col)) {$values[$columns[$col]]=Read-CellText $cell $ns $strings}
             }
             $v=[string[]]::new(11);$group='';$hasContent=$false
-            if($offset -eq 1 -and $values.ContainsKey(1)) {$group=([string]$values[1]).Trim();if($group -ne ''){$hasContent=$true}}
+            if($seen.ContainsKey($script:groupHeader) -and $values.ContainsKey($script:groupHeader)) {
+                $group=([string]$values[$script:groupHeader]).Trim()
+            }
             for($c=0;$c -lt 11;$c++) {
-                $col=$c+1+$offset
-                if($values.ContainsKey($col)) {$v[$c]=[string]$values[$col]} else {$v[$c]=''}
+                $head=$script:cnHeaders[$c]
+                $v[$c]=if($values.ContainsKey($head)) {[string]$values[$head]} else {''}
                 if($v[$c].Length -gt 0) {$hasContent=$true}
             }
-            if($hasContent) { [void]$records.Add((New-Record $v $group $r)) }
+            if($hasContent) {
+                $record=New-Record $v $group $r
+                if($values.ContainsKey($script:orderHeader)) {
+                    $order=0
+                    if([int]::TryParse(([string]$values[$script:orderHeader]),[ref]$order) -and $order -gt 0) {
+                        $record.OriginOrder=$order
+                    } else {$record.OriginOrder=0}
+                } else {$record.OriginOrder=0}
+                [void]$records.Add($record)
+            }
         }
         return ,$records
-    } finally { $zip.Dispose() }
+    } finally {$zip.Dispose()}
+}
+function Get-ExportOrderedRows($records) {
+    # Original rows keep their original relative order; Excel-added rows follow.
+    # A copied '原始行序' is treated as a new row when that order has appeared before.
+    $original=New-Object 'System.Collections.Generic.List[object]'
+    $added=New-Object 'System.Collections.Generic.List[object]'
+    $used=@{}
+    foreach($record in $records) {
+        $order=[int]$record.OriginOrder
+        if($order -gt 0 -and -not $used.ContainsKey($order)) {
+            $used[$order]=$true
+            [void]$original.Add($record)
+        } else {[void]$added.Add($record)}
+    }
+    $sorted=@($original | Sort-Object -Property OriginOrder)
+    $result=New-ResultRows
+    foreach($record in $sorted) {[void]$result.Add($record)}
+    foreach($record in $added) {[void]$result.Add($record)}
+    return ,$result
 }
 function Service-Key($values) { return ($values[0] + [char]31 + $values[2] + [char]31 + $values[3]) }
 function Group-Key($values,[string]$group) { return ($values[0] + [char]31 + $group) }
@@ -378,7 +413,7 @@ function Write-Xlsx([string]$target,$records) {
                 $lastRow=[math]::Max(1,$records.Count+1)
                 $writer.WriteStartDocument()
                 $writer.WriteStartElement('worksheet',$ns)
-                $writer.WriteStartElement('dimension',$ns);$writer.WriteAttributeString('ref',"A1:L$lastRow");$writer.WriteEndElement()
+                $writer.WriteStartElement('dimension',$ns);$writer.WriteAttributeString('ref',"A1:M$lastRow");$writer.WriteEndElement()
                 $writer.WriteStartElement('sheetViews',$ns)
                 $writer.WriteStartElement('sheetView',$ns);$writer.WriteAttributeString('workbookViewId','0')
                 $writer.WriteStartElement('pane',$ns)
@@ -387,23 +422,25 @@ function Write-Xlsx([string]$target,$records) {
                 $writer.WriteEndElement();$writer.WriteEndElement();$writer.WriteEndElement()
                 $writer.WriteStartElement('sheetFormatPr',$ns);$writer.WriteAttributeString('defaultRowHeight','17');$writer.WriteEndElement()
                 $writer.WriteStartElement('cols',$ns)
-                $widths=@(14,17,41,27,23,22,38,19,19,21,23,23)
-                for($c=1;$c -le 12;$c++) {
+                $widths=@(14,17,41,27,23,22,38,19,19,21,23,23,12)
+                for($c=1;$c -le 13;$c++) {
                     $writer.WriteStartElement('col',$ns)
                     $writer.WriteAttributeString('min',[string]$c);$writer.WriteAttributeString('max',[string]$c)
                     $writer.WriteAttributeString('width',[string]$widths[$c-1]);$writer.WriteAttributeString('customWidth','1')
+                    if($c -eq 13) {$writer.WriteAttributeString('hidden','1')}
                     $writer.WriteEndElement()
                 }
                 $writer.WriteEndElement()
                 $writer.WriteStartElement('sheetData',$ns)
                 $writer.WriteStartElement('row',$ns);$writer.WriteAttributeString('r','1');$writer.WriteAttributeString('ht','32');$writer.WriteAttributeString('customHeight','1')
-                $heads=@($script:groupHeader)+@($script:cnHeaders)
+                $heads=@($script:groupHeader)+@($script:cnHeaders)+@($script:orderHeader)
                 for($c=1;$c -le 12;$c++) { $style=if($c -eq 1){3}else{1};Write-XlsxCell $writer ((Get-ColumnName $c)+'1') ([string]$heads[$c-1]) $style }
                 $writer.WriteEndElement()
                 $row=2
                 foreach($rec in $records) {
                     $writer.WriteStartElement('row',$ns);$writer.WriteAttributeString('r',[string]$row)
                     Write-XlsxCell $writer ('A'+$row) ([string]$rec.Group) 2
+                    if([int]$rec.OriginOrder -gt 0) { Write-XlsxCell $writer ('M'+$row) ([string]$rec.OriginOrder) 0 }
                     for($c=0;$c -lt 11;$c++) { Write-XlsxCell $writer ((Get-ColumnName ($c+2))+$row) ([string]$rec.Values[$c]) 0 }
                     $writer.WriteEndElement();$row++
                 }
@@ -425,52 +462,59 @@ function Write-Csv([string]$path,$records) {
     $utf8=New-Object System.Text.UTF8Encoding($false)
     [IO.File]::WriteAllText($path,$builder.ToString(),$utf8)
 }
-function Save-FilledExcel([string]$source,[string]$destination,$records) {
-    # Copy the complete XLSX ZIP package and patch only the Accessory Id cells in sheet 1.
-    # Keeps the user's colors, widths, extra sheets, custom workbook settings, etc.
+function Save-EditedExcel([string]$source,[string]$destination,$records) {
+    # Patch only recognized Thinka columns, preserving all other XLSX ZIP entries,
+    # other user-created columns, formatting, styles and row positioning.
     $sourceZip=$null;$destinationZip=$null;$destinationFile=$null
     try {
         $sourceZip=[IO.Compression.ZipFile]::OpenRead($source)
         $sheetPath=Get-SheetPath $sourceZip
         $doc=Read-ZipXml $sourceZip $sheetPath
         [System.Xml.XmlNamespaceManager]$ns=Get-XlsxNs $doc
-        $first=$doc.SelectSingleNode('/x:worksheet/x:sheetData/x:row[@r="1"]',$ns)
-        if($null -eq $first) {throw '找不到第一行标题。'}
-        $firstCell=$first.SelectSingleNode('x:c[@r="A1"]',$ns)
         $strings=Get-SharedStrings $sourceZip
-        $grouped=(Read-CellText $firstCell $ns $strings) -ceq $script:groupHeader
-        $idColumn=if($grouped){3}else{2}
-        $idLetter=Get-ColumnName $idColumn
+        $first=$doc.SelectSingleNode('/x:worksheet/x:sheetData/x:row[1]',$ns)
+        if($null -eq $first) {throw '找不到 Excel 标题行。'}
+        $mapping=@{}
+        foreach($cell in $first.SelectNodes('x:c',$ns)) {
+            $mapping[(Read-CellText $cell $ns $strings).Trim()]=Get-ColumnNumber ($cell.GetAttribute('r'))
+        }
+        foreach($head in $script:cnHeaders) {
+            if(-not $mapping.ContainsKey($head)) {throw "Excel 缺少必要列【$head】。"}
+        }
         $rows=@{}
-        foreach($node in $doc.SelectNodes('/x:worksheet/x:sheetData/x:row',$ns)) { $rows[[int]$node.GetAttribute('r')]=$node }
+        foreach($node in $doc.SelectNodes('/x:worksheet/x:sheetData/x:row',$ns)) {$rows[[int]$node.GetAttribute('r')]=$node}
         foreach($rec in $records) {
-            $id=[string]$rec.Values[1]
             $r=[int]$rec.Line
-            if(-not $rows.ContainsKey($r)) {throw "无法定位原 Excel 第 $r 行。"}
+            if(-not $rows.ContainsKey($r)) {throw "无法定位原 Excel 第 $r 行，请重新导入。"}
             $row=$rows[$r]
-            $ref=$idLetter+$r
-            $cell=$row.SelectSingleNode("x:c[@r='$ref']",$ns)
-            $before=Read-CellText $cell $ns $strings
-            if($before -ceq $id) {continue}
-            if($null -eq $cell) {
-                $cell=$doc.CreateElement('c',$script:xlsxNs)
-                $cell.SetAttribute('r',$ref)
-                $cell.SetAttribute('s','0')
-                $inserted=$false
-                foreach($next in $row.SelectNodes('x:c',$ns)) {
-                    if((Get-ColumnNumber ($next.GetAttribute('r'))) -gt $idColumn) {
-                        [void]$row.InsertBefore($cell,$next);$inserted=$true;break
+            $wanted=@{}
+            for($c=0;$c -lt 11;$c++) {$wanted[$script:cnHeaders[$c]]=[string]$rec.Values[$c]}
+            if($mapping.ContainsKey($script:groupHeader)) {$wanted[$script:groupHeader]=[string]$rec.Group}
+            foreach($head in $wanted.Keys) {
+                $col=$mapping[$head]
+                $ref=(Get-ColumnName $col)+$r
+                $cell=$row.SelectSingleNode("x:c[@r='$ref']",$ns)
+                $before=Read-CellText $cell $ns $strings
+                if($before -ceq $wanted[$head]) {continue}
+                if($null -eq $cell) {
+                    $cell=$doc.CreateElement('c',$script:xlsxNs)
+                    $cell.SetAttribute('r',$ref)
+                    $added=$false
+                    foreach($next in $row.SelectNodes('x:c',$ns)) {
+                        if((Get-ColumnNumber ($next.GetAttribute('r'))) -gt $col) {
+                            [void]$row.InsertBefore($cell,$next);$added=$true;break
+                        }
                     }
+                    if(-not $added) {[void]$row.AppendChild($cell)}
                 }
-                if(-not $inserted) { [void]$row.AppendChild($cell) }
+                foreach($child in @($cell.ChildNodes)) {[void]$cell.RemoveChild($child)}
+                $cell.SetAttribute('t','inlineStr')
+                $is=$doc.CreateElement('is',$script:xlsxNs)
+                $t=$doc.CreateElement('t',$script:xlsxNs)
+                $t.SetAttribute('space','http://www.w3.org/XML/1998/namespace','preserve')
+                $t.InnerText=[string]$wanted[$head]
+                [void]$is.AppendChild($t);[void]$cell.AppendChild($is)
             }
-            foreach($child in @($cell.ChildNodes)) { [void]$cell.RemoveChild($child) }
-            $cell.SetAttribute('t','inlineStr')
-            $is=$doc.CreateElement('is',$script:xlsxNs)
-            $t=$doc.CreateElement('t',$script:xlsxNs)
-            $t.SetAttribute('space','http://www.w3.org/XML/1998/namespace','preserve')
-            $t.InnerText=$id
-            [void]$is.AppendChild($t);[void]$cell.AppendChild($is)
         }
         $destinationFile=[IO.File]::Create($destination)
         $destinationZip=[IO.Compression.ZipArchive]::new($destinationFile,[IO.Compression.ZipArchiveMode]::Create,$false)
@@ -478,12 +522,12 @@ function Save-FilledExcel([string]$source,[string]$destination,$records) {
             $copy=$destinationZip.CreateEntry($entry.FullName,[IO.Compression.CompressionLevel]::Fastest)
             $out=$copy.Open()
             try {
-                if($entry.FullName -ceq $sheetPath) { $doc.Save($out) }
+                if($entry.FullName -ceq $sheetPath) {$doc.Save($out)}
                 else {
                     $input=$entry.Open()
-                    try { $input.CopyTo($out) } finally { $input.Dispose() }
+                    try {$input.CopyTo($out)} finally {$input.Dispose()}
                 }
-            } finally { $out.Dispose() }
+            } finally {$out.Dispose()}
         }
     } finally {
         if($null -ne $destinationZip) {$destinationZip.Dispose()}
@@ -491,13 +535,83 @@ function Save-FilledExcel([string]$source,[string]$destination,$records) {
         if($null -ne $sourceZip) {$sourceZip.Dispose()}
     }
 }
+function Assert-ExportEqual($expected,$actual,[bool]$checkGroup) {
+    if($expected.Count -ne $actual.Count) {throw "导出回读行数不一致：$($expected.Count) / $($actual.Count)。"}
+    for($i=0;$i -lt $expected.Count;$i++) {
+        for($j=0;$j -lt 11;$j++) {
+            if($expected[$i].Values[$j] -cne $actual[$i].Values[$j]) {
+                throw "导出回读发现第 $($i+1) 条记录【$($script:cnHeaders[$j])】不同，请检查数据。"
+            }
+        }
+        if($checkGroup -and $expected[$i].Group -cne $actual[$i].Group) {
+            throw "导出回读发现第 $($i+1) 条记录配件组号不同。"
+        }
+    }
+}
+function Clone-Records($records) {
+    $copy=New-ResultRows
+    foreach($rec in $records) {
+        $item=New-Record ([string[]]@($rec.Values)) ([string]$rec.Group) ([int]$rec.Line)
+        $item.OriginOrder=[int]$rec.OriginOrder
+        [void]$copy.Add($item)
+    }
+    return ,$copy
+}
+function Get-ProjectStem([string]$path) {
+    $stem=[IO.Path]::GetFileNameWithoutExtension($path)
+    return ($stem -replace '_\d{8}_\d{4,6}(?:_\d+)?$','')
+}
+function New-ExportName([string]$path) {
+    return ((Get-ProjectStem $path)+'_'+(Get-Date -Format 'yyyyMMdd_HHmmss'))
+}
+function Export-SafeCsv([string]$projectPath,$records,[bool]$allIDs) {
+    $work=Clone-Records (Get-ExportOrderedRows $records)
+    $check=Check-Records $work $true $allIDs
+    Throw-IfInvalid $check
+    $folder=Join-Path $script:outputBase 'Thinka导入文件'
+    [void][IO.Directory]::CreateDirectory($folder)
+    $target=Unique-Target $folder (New-ExportName $projectPath) '.csv'
+    $temp=Join-Path $folder ([guid]::NewGuid().ToString('N')+'.tmp')
+    try {
+        Write-Csv $temp $work
+        $reloaded=Get-CsvData $temp
+        Assert-ExportEqual $work $reloaded $false
+        [IO.File]::Move($temp,$target)
+        # Only after success do generated UUIDs enter the current working copy.
+        foreach($row in $work) {
+            foreach($existing in $records) {
+                if([object]::ReferenceEquals($row,$existing)) {continue}
+                if($row.Line -eq $existing.Line -and $row.OriginOrder -eq $existing.OriginOrder) {
+                    $existing.Values[1]=$row.Values[1]
+                    break
+                }
+            }
+        }
+        return [pscustomobject]@{Path=$target;Check=$check}
+    } finally {if([IO.File]::Exists($temp)) {[IO.File]::Delete($temp)}}
+}
+function Export-SafeExcel([string]$projectPath,[string]$sourceExcel,$records) {
+    $folder=Join-Path $script:outputBase 'Excel配置文件'
+    [void][IO.Directory]::CreateDirectory($folder)
+    $target=Unique-Target $folder (New-ExportName $projectPath) '.xlsx'
+    $temp=Join-Path $folder ([guid]::NewGuid().ToString('N')+'.tmp')
+    try {
+        if($sourceExcel -and [IO.File]::Exists($sourceExcel)) {
+            Save-EditedExcel $sourceExcel $temp $records
+        } else { Write-Xlsx $temp $records }
+        $reloaded=Read-Xlsx $temp
+        Assert-ExportEqual $records $reloaded $true
+        [IO.File]::Move($temp,$target)
+        return [pscustomobject]@{Path=$target;Check=(Check-Records (Clone-Records $records) $false $false)}
+    } finally {if([IO.File]::Exists($temp)) {[IO.File]::Delete($temp)}}
+}
 function Generate-AllExcel([string]$path) {
     $records=Read-Xlsx $path
     $check=Check-Records $records $true $true
     Throw-IfInvalid $check
-    $target=Unique-Target (Join-Path $script:outputBase '修改') (([IO.Path]::GetFileNameWithoutExtension($path))+'_已补齐UUID') '.xlsx'
+    $target=Unique-Target (Join-Path $script:outputBase 'Excel配置文件') (([IO.Path]::GetFileNameWithoutExtension($path))+'_已补齐UUID') '.xlsx'
     # Save a new copy of the user's workbook, preserving custom worksheet formatting.
-    Save-FilledExcel $path $target $records
+    Save-EditedExcel $path $target $records
     return [pscustomobject]@{Path=$target;Check=$check}
 }
 function Convert-ToXlsx([string]$source) {
@@ -511,13 +625,13 @@ function Convert-ToCsv([string]$source,[bool]$generateAll) {
     $records=Read-Xlsx $source
     $check=Check-Records $records $true $generateAll
     Throw-IfInvalid $check
-    $target=Unique-Target (Join-Path $script:outputBase 'thinka') ([IO.Path]::GetFileNameWithoutExtension($source)) '.csv'
+    $target=Unique-Target (Join-Path $script:outputBase 'Thinka导入文件') ([IO.Path]::GetFileNameWithoutExtension($source)) '.csv'
     Write-Csv $target $records
     $updatedXlsx=''
     if($check.UpdatedRows -gt 0) {
         # Preserve generated UUID values in an editable Excel copy so later exports stay stable.
         $updatedXlsx=Unique-Target (Join-Path $script:outputBase '修改') (([IO.Path]::GetFileNameWithoutExtension($source))+'_已写入UUID') '.xlsx'
-        try { Save-FilledExcel $source $updatedXlsx $records }
+        try { Save-EditedExcel $source $updatedXlsx $records }
         catch { $updatedXlsx=''; Write-Log '提醒：CSV 已生成，但保存已补齐 UUID 的 Excel 副本失败。以后重复转换原 Excel 会生成不同 UUID，请不要直接重复导入。' }
     }
     return [pscustomobject]@{Path=$target;Check=$check;UpdatedXlsx=$updatedXlsx}
