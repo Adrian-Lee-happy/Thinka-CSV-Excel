@@ -851,6 +851,14 @@ function Snapshot {
     $script:redo.Clear()
 }
 $form=New-Object Windows.Forms.Form
+# On PS2EXE builds, use the icon embedded in the executable for the window.
+try {
+    $binary=[Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+    if($binary -and [IO.File]::Exists($binary)) {
+        $extracted=[Drawing.Icon]::ExtractAssociatedIcon($binary)
+        if($null -ne $extracted) {$form.Icon=$extracted}
+    }
+} catch {}
 $form.Text='Thinka Excel 转换工具 v1.5 开发测试版'
 $form.Size=New-Object Drawing.Size(1150,730)
 $form.MinimumSize=New-Object Drawing.Size(970,620)
