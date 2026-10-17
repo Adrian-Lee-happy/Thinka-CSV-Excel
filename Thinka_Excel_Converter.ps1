@@ -1,7 +1,7 @@
 ﻿ # Thinka Excel Converter v1.5 development | Windows PowerShell 5.1 | Direct Open XML (no Excel COM)
 # 11 original Thinka columns + one optional, Excel-only "配件组号" column.
 # The raw CSV parser/writer never converts KNX addresses to dates or numeric types.
-param([switch]$SelfTest)
+param([switch]$SelfTest,[switch]$GuiSmokeTest)
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -1236,4 +1236,19 @@ $form.Add_FormClosing({
         if([Windows.Forms.MessageBox]::Show('当前修改尚未导出，是否仍要关闭？','关闭确认','YesNo','Warning') -ne 'Yes') {$_.Cancel=$true}
     }
 })
+if($GuiSmokeTest) {
+    try {
+        $sample=Join-Path $PSScriptRoot '测试数据\三行示例.csv'
+        Load-File $sample
+        if($tree.Nodes.Count -ne 1) {throw '预览设备树房间数量异常。'}
+        if($tree.Nodes[0].Nodes.Count -ne 2) {throw '预览设备树服务数量异常。'}
+        if($grid.Rows.Count -lt 1) {throw '右侧设备详情没有加载。'}
+        if((Normalize-Address '1 2 3') -cne '1/2/3') {throw '组地址空格输入转换失败。'}
+        Write-Host 'GUI 自检通过：导入样本、房间树、设备详情和组地址规范化。'
+        exit 0
+    } catch {
+        Write-Host ('GUI 自检失败：'+$_.Exception.Message)
+        exit 1
+    } finally {$form.Dispose()}
+}
 [void]$form.ShowDialog()
