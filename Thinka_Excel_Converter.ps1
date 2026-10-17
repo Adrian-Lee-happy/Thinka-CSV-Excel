@@ -969,15 +969,32 @@ $tree.HideSelection=$false
 $split.Panel1.Controls.Add($tree)
 $tree.BringToFront()
 $filter.BringToFront()
+# Explicit four-row layout prevents Dock=Fill DataGridView from rendering
+# underneath the title/action bar (caused clipped header and first service row).
+$rightLayout=New-Object Windows.Forms.TableLayoutPanel
+$rightLayout.Dock='Fill'
+$rightLayout.ColumnCount=1
+$rightLayout.RowCount=4
+$rightLayout.Margin=New-Object Drawing.Padding(0)
+$rightLayout.Padding=New-Object Drawing.Padding(0)
+[void]$rightLayout.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle([Windows.Forms.SizeType]::Percent,100)))
+[void]$rightLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle([Windows.Forms.SizeType]::Absolute,42)))
+[void]$rightLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle([Windows.Forms.SizeType]::Absolute,50)))
+[void]$rightLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle([Windows.Forms.SizeType]::Percent,100)))
+[void]$rightLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle([Windows.Forms.SizeType]::Absolute,132)))
+$split.Panel2.Controls.Add($rightLayout)
 $heading=New-Object Windows.Forms.Label
-$heading.Dock='Top'
-$heading.Height=38
+$heading.Dock='Fill'
+$heading.TextAlign=[Drawing.ContentAlignment]::MiddleLeft
+$heading.Margin=New-Object Drawing.Padding(8,0,4,0)
 $heading.Text='从左侧选择设备'
-$split.Panel2.Controls.Add($heading)
+[void]$rightLayout.Controls.Add($heading,0,0)
 $buttons=New-Object Windows.Forms.FlowLayoutPanel
-$buttons.Dock='Top'
-$buttons.Height=40
-$split.Panel2.Controls.Add($buttons)
+$buttons.Dock='Fill'
+$buttons.Margin=New-Object Drawing.Padding(4,2,4,2)
+$buttons.AutoScroll=$true
+$buttons.WrapContents=$false
+[void]$rightLayout.Controls.Add($buttons,0,1)
 function Edit-Button([string]$title) {
     $b=New-Object Windows.Forms.Button
     $b.Text=$title
@@ -996,6 +1013,10 @@ $advanced.Width=110
 [void]$buttons.Controls.Add($advanced)
 $grid=New-Object Windows.Forms.DataGridView
 $grid.Dock='Fill'
+$grid.Margin=New-Object Drawing.Padding(2,0,2,0)
+$grid.AllowUserToResizeColumns=$true
+$grid.AllowUserToResizeRows=$true
+$grid.ScrollBars=[Windows.Forms.ScrollBars]::Both
 $grid.RowHeadersVisible=$false
 $grid.AllowUserToAddRows=$false
 $grid.AllowUserToDeleteRows=$false
@@ -1006,21 +1027,21 @@ $grid.DefaultCellStyle.WrapMode=[Windows.Forms.DataGridViewTriState]::True
 $grid.DefaultCellStyle.Padding=New-Object Windows.Forms.Padding(2,3,2,3)
 $grid.BackgroundColor=[Drawing.Color]::White
 $grid.ColumnHeadersVisible=$true
-$grid.ColumnHeadersHeight=34
+$grid.ColumnHeadersHeightSizeMode=[Windows.Forms.DataGridViewColumnHeadersHeightSizeMode]::DisableResizing
+$grid.ColumnHeadersHeight=43
+$grid.ColumnHeadersDefaultCellStyle.Alignment=[Windows.Forms.DataGridViewContentAlignment]::MiddleLeft
+$grid.ColumnHeadersDefaultCellStyle.WrapMode=[Windows.Forms.DataGridViewTriState]::False
 $grid.EnableHeadersVisualStyles=$false
 $grid.ColumnHeadersDefaultCellStyle.BackColor=[Drawing.Color]::FromArgb(232,239,248)
 $grid.AlternatingRowsDefaultCellStyle.BackColor=[Drawing.Color]::FromArgb(247,250,253)
 $grid.SelectionMode='FullRowSelect'
 $grid.MultiSelect=$false
-$split.Panel2.Controls.Add($grid)
+[void]$rightLayout.Controls.Add($grid,0,2)
 $issueList=New-Object Windows.Forms.ListBox
-$issueList.Dock='Bottom'
-$issueList.Height=120
-$split.Panel2.Controls.Add($issueList)
-$grid.BringToFront()
-$buttons.BringToFront()
-$heading.BringToFront()
-foreach($name in @('行号','房间','服务名称','服务类型','特征或参数','参数名称','读取组地址','写入组地址','配件 UUID')) {
+$issueList.Dock='Fill'
+$issueList.Margin=New-Object Drawing.Padding(4,3,4,3)
+[void]$rightLayout.Controls.Add($issueList,0,3)
+foreach($name in @('原始行号','房间','服务名称','服务类型','特征 / 参数','特征 / 参数名称','读取组地址','写入组地址','配件 UUID')) {
     [void]$grid.Columns.Add(('c'+$grid.Columns.Count),$name)
 }
 foreach($index in @(0,3,4,5)) {$grid.Columns[$index].ReadOnly=$true}
@@ -1030,6 +1051,7 @@ for($i=0;$i -lt $columnWidths.Length;$i++) {
     $grid.Columns[$i].DataPropertyName='Field'+$i
     $grid.Columns[$i].Width=$columnWidths[$i]
     $grid.Columns[$i].MinimumWidth=55
+    $grid.Columns[$i].Resizable=[Windows.Forms.DataGridViewTriState]::True
     $grid.Columns[$i].DefaultCellStyle.WrapMode=[Windows.Forms.DataGridViewTriState]::True
 }
 $grid.ShowCellToolTips=$true
