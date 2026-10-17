@@ -975,8 +975,8 @@ $rightLayout=New-Object Windows.Forms.TableLayoutPanel
 $rightLayout.Dock='Fill'
 $rightLayout.ColumnCount=1
 $rightLayout.RowCount=4
-$rightLayout.Margin=New-Object Drawing.Padding(0)
-$rightLayout.Padding=New-Object Drawing.Padding(0)
+$rightLayout.Margin=[Windows.Forms.Padding]::new(0)
+$rightLayout.Padding=[Windows.Forms.Padding]::new(0)
 [void]$rightLayout.ColumnStyles.Add(([Windows.Forms.ColumnStyle]::new([Windows.Forms.SizeType]::Percent,100)))
 [void]$rightLayout.RowStyles.Add(([Windows.Forms.RowStyle]::new([Windows.Forms.SizeType]::Absolute,42)))
 [void]$rightLayout.RowStyles.Add(([Windows.Forms.RowStyle]::new([Windows.Forms.SizeType]::Absolute,50)))
@@ -986,12 +986,12 @@ $split.Panel2.Controls.Add($rightLayout)
 $heading=New-Object Windows.Forms.Label
 $heading.Dock='Fill'
 $heading.TextAlign=[Drawing.ContentAlignment]::MiddleLeft
-$heading.Margin=New-Object Drawing.Padding(8,0,4,0)
+$heading.Margin=[Windows.Forms.Padding]::new(8,0,4,0)
 $heading.Text='从左侧选择设备'
 [void]$rightLayout.Controls.Add($heading,0,0)
 $buttons=New-Object Windows.Forms.FlowLayoutPanel
 $buttons.Dock='Fill'
-$buttons.Margin=New-Object Drawing.Padding(4,2,4,2)
+$buttons.Margin=[Windows.Forms.Padding]::new(4,2,4,2)
 $buttons.AutoScroll=$true
 $buttons.WrapContents=$false
 [void]$rightLayout.Controls.Add($buttons,0,1)
@@ -1013,7 +1013,7 @@ $advanced.Width=110
 [void]$buttons.Controls.Add($advanced)
 $grid=New-Object Windows.Forms.DataGridView
 $grid.Dock='Fill'
-$grid.Margin=New-Object Drawing.Padding(2,0,2,0)
+$grid.Margin=[Windows.Forms.Padding]::new(2,0,2,0)
 $grid.AllowUserToResizeColumns=$true
 $grid.AllowUserToResizeRows=$true
 $grid.ScrollBars=[Windows.Forms.ScrollBars]::Both
@@ -1039,7 +1039,7 @@ $grid.MultiSelect=$false
 [void]$rightLayout.Controls.Add($grid,0,2)
 $issueList=New-Object Windows.Forms.ListBox
 $issueList.Dock='Fill'
-$issueList.Margin=New-Object Drawing.Padding(4,3,4,3)
+$issueList.Margin=[Windows.Forms.Padding]::new(4,3,4,3)
 [void]$rightLayout.Controls.Add($issueList,0,3)
 foreach($name in @('原始行号','房间','服务名称','服务类型','特征 / 参数','特征 / 参数名称','读取组地址','写入组地址','配件 UUID')) {
     [void]$grid.Columns.Add(('c'+$grid.Columns.Count),$name)
