@@ -713,94 +713,413 @@ if($SelfTest) {
     }
 }
 
-$form=New-Object System.Windows.Forms.Form
-$form.Text='Thinka Excel 转换工具 v1.4.1 修复版';$form.Size=New-Object System.Drawing.Size(1070,592)
-$form.MinimumSize=New-Object System.Drawing.Size(1070,592)
-$form.StartPosition='CenterScreen';$form.Font=New-Object Drawing.Font('Microsoft YaHei UI',10)
-$form.BackColor=[Drawing.Color]::FromArgb(246,248,252)
-$folderLabel=New-Object Windows.Forms.Label
-$folderLabel.Text='输出目录';$folderLabel.Location=New-Object Drawing.Point(22,22);$folderLabel.AutoSize=$true;$form.Controls.Add($folderLabel)
-$pathText=New-Object Windows.Forms.TextBox
-$pathText.ReadOnly=$true;$pathText.Location=New-Object Drawing.Point(100,18);$pathText.Size=New-Object Drawing.Size(790,28);$pathText.Text=$script:outputBase;$form.Controls.Add($pathText)
-$pick=New-Object Windows.Forms.Button
-$pick.Text='选择文件夹';$pick.Location=New-Object Drawing.Point(907,16);$pick.Size=New-Object Drawing.Size(120,32);$form.Controls.Add($pick)
-$pick.Add_Click({
-    $dialog=New-Object Windows.Forms.FolderBrowserDialog;$dialog.SelectedPath=$script:outputBase
-    if($dialog.ShowDialog() -eq [Windows.Forms.DialogResult]::OK) {
-        $script:outputBase=$dialog.SelectedPath;$pathText.Text=$script:outputBase
+# v1.5 single-project user interface. Excel is the primary batch-entry surface.
+$script:project=New-ResultRows
+$script:baseline=New-ResultRows
+$script:projectPath=''
+$script:sourceExcel=''
+$script:lastExcel=''
+$script:lastCsv=''
+$script:undo=New-Object 'System.Collections.Generic.Stack[object]'
+$script:redo=New-Object 'System.Collections.Generic.Stack[object]'
+$script:drawing=$false
+function Record-Signature($rows) {
+    $b=New-Object Text.StringBuilder
+    foreach($r in $rows) {
+        [void]$b.Append($r.Group)
+        foreach($v in $r.Values) {[void]$b.Append([char]31);[void]$b.Append([string]$v)}
+        [void]$b.Append([char]30)
+    }
+    return $b.ToString()
+}
+function Has-Unsaved {
+    if(-not $script:projectPath) {return $false}
+    $s=Record-Signature $script:project
+    return ($s -cne $script:lastExcel -and $s -cne $script:lastCsv)
+}
+function Snapshot {
+    $script:undo.Push((Clone-Records $script:project))
+    $script:redo.Clear()
+}
+$form=New-Object Windows.Forms.Form
+$form.Text='Thinka Excel 转换工具 v1.5 开发测试版'
+$form.Size=New-Object Drawing.Size(1150,730)
+$form.MinimumSize=New-Object Drawing.Size(970,620)
+$form.StartPosition='CenterScreen'
+$form.Font=New-Object Drawing.Font('Microsoft YaHei UI',10)
+$form.KeyPreview=$true
+$tabs=New-Object Windows.Forms.TabControl
+$tabs.Dock='Fill'
+$form.Controls.Add($tabs)
+$pageFiles=New-Object Windows.Forms.TabPage('文件操作')
+$pagePreview=New-Object Windows.Forms.TabPage('设备预览与编辑')
+$tabs.TabPages.AddRange([Windows.Forms.TabPage[]]@($pageFiles,$pagePreview))
+$folderText=New-Object Windows.Forms.TextBox
+$folderText.ReadOnly=$true
+$folderText.Location=New-Object Drawing.Point(20,20)
+$folderText.Width=880
+$folderText.Anchor='Top,Left,Right'
+$folderText.Text=$script:outputBase
+$pageFiles.Controls.Add($folderText)
+$browse=New-Object Windows.Forms.Button
+$browse.Text='选择输出文件夹'
+$browse.Location=New-Object Drawing.Point(915,19)
+$browse.Size=New-Object Drawing.Size(170,30)
+$browse.Anchor='Top,Right'
+$pageFiles.Controls.Add($browse)
+$browse.Add_Click({
+    $d=New-Object Windows.Forms.FolderBrowserDialog
+    $d.SelectedPath=$script:outputBase
+    if($d.ShowDialog() -eq [Windows.Forms.DialogResult]::OK) {
+        $script:outputBase=$d.SelectedPath
+        $folderText.Text=$script:outputBase
         [void][IO.Directory]::CreateDirectory((Split-Path $script:settingsPath))
         [IO.File]::WriteAllText($script:settingsPath,$script:outputBase)
     }
 })
-function Make-Panel([string]$heading,[string]$details,[int]$x,[Drawing.Color]$color) {
-    $p=New-Object Windows.Forms.Panel;$p.Location=New-Object Drawing.Point($x,68);$p.Size=New-Object Drawing.Size(490,210);$p.BackColor=$color;$p.BorderStyle='FixedSingle';$p.AllowDrop=$true
-    $lbl=New-Object Windows.Forms.Label;$lbl.Text=$heading;$lbl.Location=New-Object Drawing.Point(9,27);$lbl.Size=New-Object Drawing.Size(468,38);$lbl.TextAlign='MiddleCenter';$lbl.Font=New-Object Drawing.Font('Microsoft YaHei UI',13,[Drawing.FontStyle]::Bold);$p.Controls.Add($lbl)
-    $desc=New-Object Windows.Forms.Label;$desc.Text=$details;$desc.Location=New-Object Drawing.Point(9,83);$desc.Size=New-Object Drawing.Size(468,97);$desc.TextAlign='MiddleCenter';$p.Controls.Add($desc)
-    return $p
+function File-Button([string]$title,[int]$x,[int]$y) {
+    $b=New-Object Windows.Forms.Button
+    $b.Text=$title
+    $b.Location=New-Object Drawing.Point($x,$y)
+    $b.Size=New-Object Drawing.Size(250,48)
+    $pageFiles.Controls.Add($b)
+    return $b
 }
-$left=Make-Panel '① Thinka CSV → 中文 Excel' "将 Thinka 原始 CSV 拖到这里`r`n自动增加最前面的【配件组号】列`r`n输出至：修改 文件夹" 22 ([Drawing.Color]::FromArgb(229,242,255))
-$right=Make-Panel '② 中文 Excel → Thinka CSV' "将编辑完成的 XLSX 拖到这里`r`n按组号生成或补齐 UUID；恢复英文表头`r`n删除辅助列，输出至：thinka 文件夹" 540 ([Drawing.Color]::FromArgb(232,246,238))
-$form.Controls.Add($left);$form.Controls.Add($right)
-$chkAll=New-Object Windows.Forms.CheckBox
-$chkAll.Text='导出 CSV 时，为没有组号且没有 ID 的独立服务也生成 UUID';$chkAll.Location=New-Object Drawing.Point(25,294);$chkAll.Size=New-Object Drawing.Size(745,27);$chkAll.Checked=$false;$form.Controls.Add($chkAll)
-$lblNote=New-Object Windows.Forms.Label
-$lblNote.Text='默认不勾选：没有组号、没有 ID 的设备保持空白，交给 Thinka 生成；有组号的自动合并。'
-$lblNote.Location=New-Object Drawing.Point(28,326);$lblNote.Size=New-Object Drawing.Size(980,24);$lblNote.ForeColor=[Drawing.Color]::FromArgb(85,95,111);$form.Controls.Add($lblNote)
-$genButton=New-Object Windows.Forms.Button
-$genButton.Text='生成全部 UUID Excel...';$genButton.Location=New-Object Drawing.Point(22,365);$genButton.Size=New-Object Drawing.Size(255,42);$form.Controls.Add($genButton)
-$checkButton=New-Object Windows.Forms.Button
-$checkButton.Text='检查 CSV / Excel 合规...';$checkButton.Location=New-Object Drawing.Point(293,365);$checkButton.Size=New-Object Drawing.Size(255,42);$form.Controls.Add($checkButton)
+$loadCsv=File-Button '① 导入 Thinka CSV' 22 90
+$loadXlsx=File-Button '② 导入编辑好的 Excel' 300 90
+$saveXlsx=File-Button '③ 导出 Excel 配置文件' 22 161
+$saveCsv=File-Button '④ 导出 Thinka CSV' 300 161
+$reportBtn=File-Button '全面检测' 580 90
+$previewBtn=File-Button '进入设备预览' 580 161
+$generateAll=New-Object Windows.Forms.CheckBox
+$generateAll.Text='导出 CSV 时，也为独立服务的空白 UUID 生成 ID（不勾选则交由 Thinka）'
+$generateAll.Location=New-Object Drawing.Point(22,236)
+$generateAll.Size=New-Object Drawing.Size(780,29)
+$pageFiles.Controls.Add($generateAll)
+$topmost=New-Object Windows.Forms.CheckBox
+$topmost.Text='窗口置顶'
+$topmost.Location=New-Object Drawing.Point(840,237)
+$topmost.Size=New-Object Drawing.Size(120,28)
+$pageFiles.Controls.Add($topmost)
+$topmost.Add_CheckedChanged({$form.TopMost=$topmost.Checked})
+$status=New-Object Windows.Forms.Label
+$status.Text='请导入 Thinka CSV 或之前生成的 Excel。'
+$status.Location=New-Object Drawing.Point(23,287)
+$status.Size=New-Object Drawing.Size(1050,83)
+$status.Anchor='Top,Left,Right'
+$pageFiles.Controls.Add($status)
 $log=New-Object Windows.Forms.TextBox
-$log.Multiline=$true;$log.ReadOnly=$true;$log.ScrollBars='Vertical';$log.Location=New-Object Drawing.Point(22,422);$log.Size=New-Object Drawing.Size(1000,117)
-$log.Text='准备就绪。XLSX 直接读写，无需启动 Excel。'
-$form.Controls.Add($log)
-function Write-Log([string]$message) { $log.AppendText("`r`n"+$message); $log.SelectionStart=$log.TextLength; $log.ScrollToCaret(); $form.Refresh() }
-function Write-Result($result) {
-    Write-Log "完成：$($result.Path)"
-    if($result.UpdatedXlsx) { Write-Log "已另外保存含稳定 UUID 的 Excel：$($result.UpdatedXlsx)（下次修改请使用它）" }
-    Write-Log "记录 $($result.Check.Rows) 行、服务 $($result.Check.Services) 个；补齐 ID 单元格 $($result.Check.UpdatedRows) 个；提醒 $($result.Check.Warnings.Count) 项。"
-    if($result.Check.Errors.Count -gt 0) { Write-Log "注意：输入文件已有 $($result.Check.Errors.Count) 项异常，请使用【检查合规】查看。" }
+$log.Multiline=$true
+$log.ReadOnly=$true
+$log.ScrollBars='Vertical'
+$log.Text='源文件不覆盖。推荐先导出 Excel，批量复制和编辑设备后重新导入。'
+$log.Location=New-Object Drawing.Point(22,380)
+$log.Size=New-Object Drawing.Size(1060,260)
+$log.Anchor='Top,Bottom,Left,Right'
+$pageFiles.Controls.Add($log)
+function Write-Log([string]$message) {
+    $log.AppendText([Environment]::NewLine+$message)
+    $log.SelectionStart=$log.TextLength
+    $log.ScrollToCaret()
 }
-function Process-Dropped([string[]]$paths,[string]$direction) {
-    foreach($path in $paths) {
-        try {
-            if(-not [IO.File]::Exists($path)){continue}
-            $ext=[IO.Path]::GetExtension($path).ToLowerInvariant()
-            if($direction -eq 'left' -and $ext -ne '.csv') { Write-Log '左侧只接受 CSV。';continue }
-            if($direction -eq 'right' -and $ext -ne '.xlsx') { Write-Log '右侧只接受 XLSX。';continue }
-            Write-Log ("正在处理：" + [IO.Path]::GetFileName($path))
-            $timer=[Diagnostics.Stopwatch]::StartNew()
-            if($direction -eq 'left') {$result=Convert-ToXlsx $path}
-            else {$result=Convert-ToCsv $path ([bool]$chkAll.Checked)}
-            Write-Result $result
-            $timer.Stop();Write-Log ('本次耗时：'+$timer.Elapsed.TotalSeconds.ToString('F2')+' 秒')
-        } catch { Write-Log ("失败："+$_.Exception.Message) }
+$split=New-Object Windows.Forms.SplitContainer
+$split.Dock='Fill'
+$split.SplitterDistance=300
+$pagePreview.Controls.Add($split)
+$filter=New-Object Windows.Forms.TextBox
+$filter.Dock='Top'
+$split.Panel1.Controls.Add($filter)
+$tree=New-Object Windows.Forms.TreeView
+$tree.Dock='Fill'
+$tree.HideSelection=$false
+$split.Panel1.Controls.Add($tree)
+$tree.BringToFront()
+$filter.BringToFront()
+$heading=New-Object Windows.Forms.Label
+$heading.Dock='Top'
+$heading.Height=38
+$heading.Text='从左侧选择设备'
+$split.Panel2.Controls.Add($heading)
+$buttons=New-Object Windows.Forms.FlowLayoutPanel
+$buttons.Dock='Top'
+$buttons.Height=40
+$split.Panel2.Controls.Add($buttons)
+function Edit-Button([string]$title) {
+    $b=New-Object Windows.Forms.Button
+    $b.Text=$title
+    $b.Size=New-Object Drawing.Size(102,31)
+    [void]$buttons.Controls.Add($b)
+    return $b
+}
+$undoBtn=Edit-Button '撤销 Ctrl+Z'
+$redoBtn=Edit-Button '重做 Ctrl+Y'
+$restoreBtn=Edit-Button '恢复此设备'
+$groupBtn=Edit-Button '组合服务'
+$separateBtn=Edit-Button '解除组合'
+$advanced=New-Object Windows.Forms.CheckBox
+$advanced.Text='高级编辑'
+$advanced.Width=110
+[void]$buttons.Controls.Add($advanced)
+$grid=New-Object Windows.Forms.DataGridView
+$grid.Dock='Fill'
+$grid.RowHeadersVisible=$false
+$grid.AllowUserToAddRows=$false
+$grid.AllowUserToDeleteRows=$false
+$grid.AutoSizeColumnsMode='Fill'
+$grid.SelectionMode='FullRowSelect'
+$grid.MultiSelect=$false
+$split.Panel2.Controls.Add($grid)
+$issueList=New-Object Windows.Forms.ListBox
+$issueList.Dock='Bottom'
+$issueList.Height=120
+$split.Panel2.Controls.Add($issueList)
+$grid.BringToFront()
+$buttons.BringToFront()
+$heading.BringToFront()
+foreach($name in @('行号','服务名称','服务类型','特征或参数','参数名称','读取组地址','写入组地址','配件 UUID')) {
+    [void]$grid.Columns.Add(('c'+$grid.Columns.Count),$name)
+}
+foreach($index in @(0,2,3,4)) {$grid.Columns[$index].ReadOnly=$true}
+$grid.Columns[7].Visible=$false
+function Accessory-Key($rec) {
+    $v=$rec.Values
+    $prefix=$v[0]+[char]31
+    if($rec.Group -ne '') {return $prefix+'G'+$rec.Group}
+    if($v[1] -ne '') {return $prefix+'I'+$v[1].ToLowerInvariant()}
+    return $prefix+'S'+(Service-Key $v)
+}
+function Find-Line([int]$line) {
+    foreach($room in $tree.Nodes) {
+        foreach($device in $room.Nodes) {
+            foreach($rec in $device.Tag) {
+                if($rec.Line -eq $line) {return $device}
+            }
+        }
+    }
+    return $null
+}
+function Show-Device {
+    $script:drawing=$true
+    try {
+        $grid.Rows.Clear()
+        $node=$tree.SelectedNode
+        if($null -eq $node -or $node.Level -ne 1) {$heading.Text='从左侧选择设备';return}
+        $heading.Text=$node.Parent.Text+' / '+$node.Text
+        foreach($rec in $node.Tag) {
+            $v=$rec.Values
+            $i=$grid.Rows.Add($rec.Line,$v[2],$v[3],$v[4],$v[5],$v[6],$v[7],$v[1])
+            $grid.Rows[$i].Tag=$rec
+        }
+    } finally {$script:drawing=$false}
+}
+function Show-Issues {
+    $check=Check-Records (Clone-Records $script:project) $false $false
+    $issueList.Items.Clear()
+    foreach($err in $check.Errors) {[void]$issueList.Items.Add('错误：'+$err)}
+    foreach($warning in $check.Warnings) {[void]$issueList.Items.Add('提醒：'+$warning)}
+    $sign=Record-Signature $script:project
+    $excel=if($sign -ceq $script:lastExcel){'最新版'}else{'未导出最新版'}
+    $csv=if($sign -ceq $script:lastCsv){'最新版'}else{'未导出最新版'}
+    $status.Text="项目：$([IO.Path]::GetFileName($script:projectPath))，记录 $($check.Rows)，服务 $($check.Services)，错误 $($check.Errors.Count)，提醒 $($check.Warnings.Count)" + [Environment]::NewLine + "Excel：$excel；CSV：$csv。"
+    return $check
+}
+function Rebuild-Tree([int]$focusLine) {
+    $script:drawing=$true
+    try {
+        $tree.BeginUpdate()
+        $tree.Nodes.Clear()
+        $rooms=@{}
+        $items=@{}
+        foreach($rec in $script:project) {
+            $v=$rec.Values
+            $all=($v -join ' ')+' '+$rec.Group
+            if($filter.Text -and $all.IndexOf($filter.Text,[StringComparison]::OrdinalIgnoreCase) -lt 0) {continue}
+            $room=[string]$v[0]
+            $key=Accessory-Key $rec
+            if(-not $rooms.ContainsKey($room)) {
+                $rn=New-Object Windows.Forms.TreeNode($room)
+                $rooms[$room]=$rn
+                [void]$tree.Nodes.Add($rn)
+            }
+            if(-not $items.ContainsKey($key)) {
+                $dn=New-Object Windows.Forms.TreeNode($v[2])
+                $dn.Tag=New-ResultRows
+                $items[$key]=$dn
+                [void]$rooms[$room].Nodes.Add($dn)
+            }
+            [void]$items[$key].Tag.Add($rec)
+        }
+        foreach($device in $items.Values) {
+            $names=Unique-Strings @($device.Tag | ForEach-Object {$_.Values[2]})
+            if($names.Length -gt 1) {$device.Text=$names[0]+' ('+$names.Length+' 个服务)'}
+        }
+        $tree.ExpandAll()
+        $tree.EndUpdate()
+        $select=if($focusLine -gt 0){Find-Line $focusLine}else{$null}
+        if($null -eq $select) {
+            foreach($rn in $tree.Nodes) {if($rn.Nodes.Count -gt 0) {$select=$rn.Nodes[0];break}}
+        }
+        if($null -ne $select) {$tree.SelectedNode=$select}
+    } finally {$script:drawing=$false}
+    Show-Device
+    [void](Show-Issues)
+}
+function Load-File([string]$path) {
+    if(Has-Unsaved) {
+        if([Windows.Forms.MessageBox]::Show('存在未导出修改，确认放弃并导入新文件？','切换项目','YesNo','Warning') -ne 'Yes') {return}
+    }
+    $ext=[IO.Path]::GetExtension($path).ToLowerInvariant()
+    if($ext -eq '.csv') {$rows=Get-CsvData $path}
+    elseif($ext -eq '.xlsx') {$rows=Read-Xlsx $path}
+    else {throw '只接受 CSV 和 XLSX 文件。'}
+    $script:project=$rows
+    $script:baseline=Clone-Records $rows
+    $script:projectPath=$path
+    $script:sourceExcel=if($ext -eq '.xlsx'){$path}else{''}
+    $script:lastCsv=''
+    $script:lastExcel=if($ext -eq '.xlsx'){Record-Signature $rows}else{''}
+    $script:undo.Clear();$script:redo.Clear()
+    $filter.Text=''
+    Rebuild-Tree 0
+    Write-Log ('已导入：'+$path+'，'+$rows.Count+' 行。')
+    $tabs.SelectedTab=$pagePreview
+}
+function Choose-Input([string]$kind) {
+    $d=New-Object Windows.Forms.OpenFileDialog
+    $d.Filter=if($kind -eq 'csv'){'Thinka CSV (*.csv)|*.csv'}else{'Excel (*.xlsx)|*.xlsx'}
+    if($d.ShowDialog() -ne 'OK') {return}
+    try {Load-File $d.FileName}
+    catch {[void][Windows.Forms.MessageBox]::Show($_.Exception.Message,'导入失败')}
+}
+function Do-Export([string]$kind) {
+    if(-not $script:projectPath) {[void][Windows.Forms.MessageBox]::Show('请先导入文件。');return}
+    try {
+        $checked=Show-Issues
+        if($checked.Errors.Count -gt 0) {
+            [void][Windows.Forms.MessageBox]::Show("有 $($checked.Errors.Count) 项错误，先修复再导出。")
+            return
+        }
+        if($kind -eq 'csv') {
+            $msg="准备生成 Thinka CSV。" + [Environment]::NewLine + "记录 $($checked.Rows)，服务 $($checked.Services)，提醒 $($checked.Warnings.Count)。" + [Environment]::NewLine + '确认导出？'
+            if([Windows.Forms.MessageBox]::Show($msg,'确认导出','YesNo','Question') -ne 'Yes') {return}
+            $res=Export-SafeCsv $script:projectPath $script:project ([bool]$generateAll.Checked)
+            $script:lastCsv=Record-Signature $script:project
+        } else {
+            $res=Export-SafeExcel $script:projectPath $script:sourceExcel $script:project
+            $script:lastExcel=Record-Signature $script:project
+        }
+        Rebuild-Tree 0
+        Write-Log ('导出与回读校验成功：'+$res.Path)
+        if([Windows.Forms.MessageBox]::Show("已导出："+[Environment]::NewLine+$res.Path+[Environment]::NewLine+'打开所在文件夹？','成功','YesNo','Information') -eq 'Yes') {
+            [void][Diagnostics.Process]::Start('explorer.exe',('/select,"'+$res.Path+'"'))
+        }
+    } catch {
+        Write-Log ('导出失败：'+$_.Exception.Message)
+        [void][Windows.Forms.MessageBox]::Show($_.Exception.Message,'导出失败')
     }
 }
-foreach($control in @($left,$right)+@($left.Controls)+@($right.Controls)) {
-    $control.AllowDrop=$true
-    $control.Add_DragEnter({ if($_.Data.GetDataPresent([Windows.Forms.DataFormats]::FileDrop)) {$_.Effect=[Windows.Forms.DragDropEffects]::Copy} else {$_.Effect=[Windows.Forms.DragDropEffects]::None} })
+function Normalize-Address([string]$text) {
+    $text=$text.Trim()
+    if($text -match '^\d+\s+\d+\s+\d+$') {return ($text -replace '\s+','/')}
+    if($text -match '^\d+\s*/\s*\d+(?:\s*/\s*\d+)?$') {return ($text -replace '\s*/\s*','/')}
+    return $text
 }
-foreach($control in @($left)+@($left.Controls)) { $control.Add_DragDrop({ Process-Dropped @($_.Data.GetData([Windows.Forms.DataFormats]::FileDrop)) 'left' }) }
-foreach($control in @($right)+@($right.Controls)) { $control.Add_DragDrop({ Process-Dropped @($_.Data.GetData([Windows.Forms.DataFormats]::FileDrop)) 'right' }) }
-$genButton.Add_Click({
-    $dlg=New-Object Windows.Forms.OpenFileDialog
-    $dlg.Title='选择需要补齐 UUID 的中文 Excel 文件';$dlg.Filter='Excel 文件 (*.xlsx)|*.xlsx';$dlg.Multiselect=$false
-    if($dlg.ShowDialog() -ne [Windows.Forms.DialogResult]::OK) {return}
-    try { $timer=[Diagnostics.Stopwatch]::StartNew();Write-Log '正在生成所有缺失 UUID ...'; $result=Generate-AllExcel $dlg.FileName; Write-Result $result; $timer.Stop();Write-Log ('本次耗时：'+$timer.Elapsed.TotalSeconds.ToString('F2')+' 秒') }
-    catch { Write-Log ('生成失败：'+$_.Exception.Message) }
+$grid.Add_CellEndEdit({
+    if($script:drawing) {return}
+    $idx=$_.ColumnIndex;$row=$grid.Rows[$_.RowIndex]
+    if($null -eq $row.Tag) {return}
+    $rec=$row.Tag
+    $map=@{1=2;5=6;6=7;7=1}
+    if(-not $map.ContainsKey($idx)) {return}
+    if($idx -eq 7 -and -not $advanced.Checked) {return}
+    $new=if($null -eq $row.Cells[$idx].Value){''}else{[string]$row.Cells[$idx].Value}
+    if($idx -eq 5 -or $idx -eq 6) {$new=Normalize-Address $new}
+    $old=[string]$rec.Values[$map[$idx]]
+    if($new -ceq $old) {return}
+    Snapshot
+    if($idx -eq 1 -or $idx -eq 7) {
+        $key=Service-Key $rec.Values
+        foreach($item in $script:project) {
+            if((Service-Key $item.Values) -ceq $key) {$item.Values[$map[$idx]]=$new}
+        }
+    } else {$rec.Values[$map[$idx]]=$new}
+    Rebuild-Tree $rec.Line
 })
-$checkButton.Add_Click({
-    $dlg=New-Object Windows.Forms.OpenFileDialog
-    $dlg.Title='选择需要检测的 Thinka CSV 或中文 Excel';$dlg.Filter='支持文件 (*.csv;*.xlsx)|*.csv;*.xlsx|CSV 文件 (*.csv)|*.csv|Excel 文件 (*.xlsx)|*.xlsx';$dlg.Multiselect=$false
-    if($dlg.ShowDialog() -ne [Windows.Forms.DialogResult]::OK) {return}
-    try {
-        $timer=[Diagnostics.Stopwatch]::StartNew()
-        Write-Log '正在进行结构、UUID、配件组号、服务名称和组地址检查...'
-        $result=Check-File $dlg.FileName
-        $timer.Stop();Write-Log ("检测耗时："+$timer.Elapsed.TotalSeconds.ToString('F2')+" 秒")
-        Write-Log ("检测完成：错误 $($result.Check.Errors.Count)，提醒 $($result.Check.Warnings.Count)。报告：$($result.Path)")
-        [void][Windows.Forms.MessageBox]::Show("错误：$($result.Check.Errors.Count) 项`r`n提醒：$($result.Check.Warnings.Count) 项`r`n`r`n检查报告已保存：`r`n$($result.Path)",'Thinka 合规检测',[Windows.Forms.MessageBoxButtons]::OK)
-    } catch {Write-Log ('检查失败：'+$_.Exception.Message)}
+function Do-Undo([bool]$redo) {
+    $from=if($redo){$script:redo}else{$script:undo}
+    $to=if($redo){$script:undo}else{$script:redo}
+    if($from.Count -eq 0) {return}
+    $to.Push((Clone-Records $script:project))
+    $script:project=$from.Pop()
+    Rebuild-Tree 0
+}
+$tree.Add_AfterSelect({if(-not $script:drawing){Show-Device}})
+$filter.Add_TextChanged({if(-not $script:drawing){Rebuild-Tree 0}})
+$advanced.Add_CheckedChanged({$grid.Columns[7].Visible=$advanced.Checked})
+$undoBtn.Add_Click({Do-Undo $false})
+$redoBtn.Add_Click({Do-Undo $true})
+$form.Add_KeyDown({
+    if($_.Control -and $_.KeyCode -eq 'Z') {Do-Undo $false;$_.SuppressKeyPress=$true}
+    if($_.Control -and $_.KeyCode -eq 'Y') {Do-Undo $true;$_.SuppressKeyPress=$true}
+})
+$restoreBtn.Add_Click({
+    if($null -eq $tree.SelectedNode -or $tree.SelectedNode.Level -ne 1) {return}
+    if([Windows.Forms.MessageBox]::Show('将此设备恢复到刚导入时的配置？','恢复','YesNo') -ne 'Yes') {return}
+    Snapshot
+    $line=$tree.SelectedNode.Tag[0].Line
+    foreach($rec in $tree.SelectedNode.Tag) {
+        foreach($base in $script:baseline) {
+            if($base.Line -eq $rec.Line) {
+                $rec.Values=[string[]]@($base.Values)
+                $rec.Group=$base.Group
+                break
+            }
+        }
+    }
+    Rebuild-Tree $line
+})
+$loadCsv.Add_Click({Choose-Input 'csv'})
+$loadXlsx.Add_Click({Choose-Input 'xlsx'})
+$saveXlsx.Add_Click({Do-Export 'xlsx'})
+$saveCsv.Add_Click({Do-Export 'csv'})
+$previewBtn.Add_Click({$tabs.SelectedTab=$pagePreview})
+$reportBtn.Add_Click({
+    if(-not $script:projectPath) {return}
+    $c=Show-Issues
+    $folder=Join-Path $script:outputBase '检查报告'
+    [void][IO.Directory]::CreateDirectory($folder)
+    $target=Unique-Target $folder ((New-ExportName $script:projectPath)+'_检查报告') '.txt'
+    $report=@("来源：$script:projectPath","错误：$($c.Errors.Count)","提醒：$($c.Warnings.Count)",'')
+    $report+=@($c.Errors);$report+=@($c.Warnings)
+    [IO.File]::WriteAllLines($target,[string[]]$report,[Text.UTF8Encoding]::new($true))
+    Write-Log ('检查报告：'+$target)
+    [void][Windows.Forms.MessageBox]::Show("报告已生成："+[Environment]::NewLine+$target,'全面检测')
+})
+$issueList.Add_DoubleClick({
+    if([string]$issueList.SelectedItem -match '第\s+(\d+)\s+行') {
+        $node=Find-Line ([int]$Matches[1])
+        if($null -ne $node) {$tree.SelectedNode=$node}
+    }
+})
+# Grouping actions will be provided after Windows GUI smoke tests.
+$groupBtn.Enabled=$false
+$separateBtn.Enabled=$false
+foreach($element in @($pageFiles,$pagePreview)) {
+    $element.AllowDrop=$true
+    $element.Add_DragEnter({
+        if($_.Data.GetDataPresent([Windows.Forms.DataFormats]::FileDrop)) {$_.Effect='Copy'}
+    })
+    $element.Add_DragDrop({
+        $paths=@($_.Data.GetData([Windows.Forms.DataFormats]::FileDrop))
+        if($paths.Count -gt 0) {
+            try {Load-File $paths[0]}
+            catch {[void][Windows.Forms.MessageBox]::Show($_.Exception.Message,'拖入文件失败')}
+        }
+    })
+}
+$form.Add_FormClosing({
+    if(Has-Unsaved) {
+        if([Windows.Forms.MessageBox]::Show('当前修改尚未导出，是否仍要关闭？','关闭确认','YesNo','Warning') -ne 'Yes') {$_.Cancel=$true}
+    }
 })
 [void]$form.ShowDialog()
