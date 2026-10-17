@@ -929,8 +929,25 @@ function Write-Log([string]$message) {
 }
 $split=New-Object Windows.Forms.SplitContainer
 $split.Dock='Fill'
+$split.FixedPanel=[Windows.Forms.FixedPanel]::Panel1
 $split.SplitterDistance=300
 $pagePreview.Controls.Add($split)
+# Assign splitter position after WinForms has sized the tab page. Otherwise
+# the initial 194px Panel2 width can stay fixed while the form expands.
+function Set-EditorPaneWidths {
+    if($split.Width -lt 700) {return}
+    $split.FixedPanel=[Windows.Forms.FixedPanel]::Panel1
+    $target=[math]::Min(315,[math]::Max(235,$split.Width-510))
+    if($split.SplitterDistance -ne $target) {$split.SplitterDistance=$target}
+}
+$split.Add_SizeChanged({Set-EditorPaneWidths})
+$tabs.Add_SelectedIndexChanged({
+    if($tabs.SelectedTab -eq $pagePreview) {
+        Set-EditorPaneWidths
+        $split.PerformLayout()
+    }
+})
+$form.Add_Shown({Set-EditorPaneWidths})
 $filter=New-Object Windows.Forms.TextBox
 $filter.Dock='Top'
 $split.Panel1.Controls.Add($filter)
@@ -970,7 +987,13 @@ $grid.Dock='Fill'
 $grid.RowHeadersVisible=$false
 $grid.AllowUserToAddRows=$false
 $grid.AllowUserToDeleteRows=$false
-$grid.AutoSizeColumnsMode='Fill'
+$grid.AutoSizeColumnsMode='None'
+$grid.BackgroundColor=[Drawing.Color]::White
+$grid.ColumnHeadersVisible=$true
+$grid.ColumnHeadersHeight=34
+$grid.EnableHeadersVisualStyles=$false
+$grid.ColumnHeadersDefaultCellStyle.BackColor=[Drawing.Color]::FromArgb(232,239,248)
+$grid.AlternatingRowsDefaultCellStyle.BackColor=[Drawing.Color]::FromArgb(247,250,253)
 $grid.SelectionMode='FullRowSelect'
 $grid.MultiSelect=$false
 $split.Panel2.Controls.Add($grid)
@@ -985,6 +1008,8 @@ foreach($name in @('行号','房间','服务名称','服务类型','特征或参
     [void]$grid.Columns.Add(('c'+$grid.Columns.Count),$name)
 }
 foreach($index in @(0,3,4,5)) {$grid.Columns[$index].ReadOnly=$true}
+$columnWidths=@(58,85,155,133,105,195,112,112,245)
+for($i=0;$i -lt $columnWidths.Length;$i++) {$grid.Columns[$i].Width=$columnWidths[$i]}
 $grid.Columns[8].Visible=$false
 function Accessory-Key($rec) {
     $v=$rec.Values
@@ -1005,17 +1030,38 @@ function Find-Line([int]$line) {
 }
 function Show-Device {
     $script:drawing=$true
+    $grid.SuspendLayout()
     try {
         $grid.Rows.Clear()
         $node=$tree.SelectedNode
-        if($null -eq $node -or $node.Level -ne 1) {$heading.Text='从左侧选择设备';return}
-        $heading.Text=$node.Parent.Text+' / '+$node.Text
-        foreach($rec in $node.Tag) {
-            $v=$rec.Values
-            $i=$grid.Rows.Add($rec.Line,$v[0],$v[2],$v[3],$v[4],$v[5],$v[6],$v[7],$v[1])
-            $grid.Rows[$i].Tag=$rec
+        if($null -eq $node -or $node.Level -ne 1) {
+            $heading.Text='从左侧选择设备'
+            return
         }
-    } finally {$script:drawing=$false}
+        $shown=0
+        foreach($rec in $node.Tag) {
+            if($null -eq $rec -or $null -eq $rec.Values -or $rec.Values.Length -ne 11) {
+                throw '设备记录缺少标准 11 列字段，无法显示。'
+            }
+            $v=$rec.Values
+            $cells=[object[]]@($rec.Line,$v[0],$v[2],$v[3],$v[4],$v[5],$v[6],$v[7],$v[1])
+            $i=$grid.Rows.Add($cells)
+            $grid.Rows[$i].Tag=$rec
+            $shown++
+        }
+        $heading.Text=$node.Parent.Text+' / '+$node.Text+"    （$shown 行参数）"
+        if($grid.Rows.Count -gt 0) {
+            try {$grid.FirstDisplayedScrollingRowIndex=0} catch {}
+        }
+    } catch {
+        $heading.Text='显示参数失败，请回到文件操作查看日志'
+        Write-Log ('设备参数显示失败：'+$_.Exception.Message)
+        [void][Windows.Forms.MessageBox]::Show($_.Exception.Message,'设备参数显示错误')
+    } finally {
+        $grid.ResumeLayout($true)
+        $grid.Invalidate()
+        $script:drawing=$false
+    }
 }
 function Show-Issues {
     $check=Check-Records (Clone-Records $script:project) $false $false
@@ -1337,7 +1383,7 @@ if($GuiSmokeTest) {
                 throw "双服务加湿机：$($humidifierNode.Text) 的 DataGridView 实际 $($grid.Rows.Count) 行，而 CSV 有 2 行。"
             }
             [Windows.Forms.Application]::DoEvents()
-            if(-not $grid.Visible -or $grid.Height -lt 100) {
+            if(-not $grid.Visible -or $grid.Height -lt 100 -or $split.Panel2.Width -lt 480) {
                 throw "双服务加湿机：详情表格不可见或尺寸异常。可见=$($grid.Visible)；尺寸=$($grid.Size)"
             }
             if($grid.DisplayedRowCount($false) -lt 2 -or $grid.GetRowDisplayRectangle(0,$false).Height -lt 15) {
