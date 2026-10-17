@@ -1,0 +1,7 @@
+"Room *","Accessory Id","Service Name *","Service Type *","Characteristic or Parameter","Characteristic or Parameter name *","read address","write address","manufacturer","model","serial number"
+"测试卧室","a1251e10-2026-4aa1-9bbb-111111111111","测试加湿机","Switch","characteristic","On","5/1/10","5/0/10","","",""
+"测试卧室","a1251e10-2026-4aa1-9bbb-111111111111","湿度","HumiditySensor","characteristic","CurrentRelativeHumidity","5/1/15","","","",""
+"测试次卧","a1251e10-2026-4aa1-9bbb-222222222222","测试加湿机","Switch","characteristic","On","5/1/20","5/0/20","","",""
+"测试次卧","a1251e10-2026-4aa1-9bbb-222222222222","湿度","HumiditySensor","characteristic","CurrentRelativeHumidity","5/1/25","","","",""
+"测试儿童房","a1251e10-2026-4aa1-9bbb-333333333333","测试加湿机","Switch","characteristic","On","5/1/30","5/0/30","","",""
+"测试儿童房","a1251e10-2026-4aa1-9bbb-333333333333","湿度","HumiditySensor","characteristic","CurrentRelativeHumidity","5/1/35","","","",""
