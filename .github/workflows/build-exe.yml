@@ -1,0 +1,55 @@
+name: Build Windows GUI EXE
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'Thinka_Excel_Converter.ps1'
+      - 'build/Build-Exe.ps1'
+      - '.github/workflows/build-exe.yml'
+      - '测试数据/**'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Windows PowerShell 5.1 / PS2EXE
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Run source regression tests
+        shell: powershell
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File ".\Thinka_Excel_Converter.ps1" -SelfTest
+          if ($LASTEXITCODE -ne 0) { throw "Source regression self-test failed ($LASTEXITCODE)." }
+
+      - name: Build GUI EXE (no console)
+        shell: powershell
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\build\Build-Exe.ps1" -InstallPs2Exe
+          if ($LASTEXITCODE -ne 0) { throw "PS2EXE build failed ($LASTEXITCODE)." }
+
+      - name: Package EXE for download
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $stage = Join-Path $env:RUNNER_TEMP 'Thinka_Excel_Converter_v1.4.1'
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item -LiteralPath ".\dist\Thinka_Excel_Converter.exe" -Destination $stage -ErrorAction Stop
+          Copy-Item -LiteralPath ".\README.md" -Destination $stage -ErrorAction Stop
+          Copy-Item -LiteralPath ".\使用说明.txt" -Destination $stage -ErrorAction Stop
+          Copy-Item -LiteralPath ".\更新记录.txt" -Destination $stage -ErrorAction Stop
+          Compress-Archive -Path (Join-Path $stage '*') -DestinationPath ".\dist\Thinka_Excel_Converter_v1.4.1_EXE.zip" -Force
+          if (-not (Test-Path ".\dist\Thinka_Excel_Converter_v1.4.1_EXE.zip")) { throw 'ZIP archive not created.' }
+
+      - name: Upload EXE ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Thinka_Excel_Converter_v1.4.1_EXE
+          path: dist/Thinka_Excel_Converter_v1.4.1_EXE.zip
+          if-no-files-found: error
+          retention-days: 30
