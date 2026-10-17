@@ -977,11 +977,11 @@ $rightLayout.ColumnCount=1
 $rightLayout.RowCount=4
 $rightLayout.Margin=New-Object Drawing.Padding(0)
 $rightLayout.Padding=New-Object Drawing.Padding(0)
-[void]$rightLayout.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle([Windows.Forms.SizeType]::Percent,100)))
-[void]$rightLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle([Windows.Forms.SizeType]::Absolute,42)))
-[void]$rightLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle([Windows.Forms.SizeType]::Absolute,50)))
-[void]$rightLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle([Windows.Forms.SizeType]::Percent,100)))
-[void]$rightLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle([Windows.Forms.SizeType]::Absolute,132)))
+[void]$rightLayout.ColumnStyles.Add(([Windows.Forms.ColumnStyle]::new([Windows.Forms.SizeType]::Percent,100)))
+[void]$rightLayout.RowStyles.Add(([Windows.Forms.RowStyle]::new([Windows.Forms.SizeType]::Absolute,42)))
+[void]$rightLayout.RowStyles.Add(([Windows.Forms.RowStyle]::new([Windows.Forms.SizeType]::Absolute,50)))
+[void]$rightLayout.RowStyles.Add(([Windows.Forms.RowStyle]::new([Windows.Forms.SizeType]::Percent,100)))
+[void]$rightLayout.RowStyles.Add(([Windows.Forms.RowStyle]::new([Windows.Forms.SizeType]::Absolute,132)))
 $split.Panel2.Controls.Add($rightLayout)
 $heading=New-Object Windows.Forms.Label
 $heading.Dock='Fill'
@@ -1457,6 +1457,23 @@ if($GuiSmokeTest) {
         Load-File $humidifierSample
         if($tree.Nodes.Count -ne 3) {throw '双服务加湿机：房间数量异常。'}
         Write-Host ("界面尺寸诊断：form={0}; tabs={1}; preview={2}; split={3}; panel2={4}; grid={5}" -f $form.ClientSize,$tabs.Size,$pagePreview.Size,$split.Size,$split.Panel2.Size,$grid.Size)
+        # Assert actual non-overlap in on-screen coordinates; mere RowCount=2
+        # would pass even when the first row and column headers are covered.
+        if(-not [object]::ReferenceEquals($grid.Parent,$rightLayout)) {throw '参数表格未放置于独立布局行。'}
+        if(-not [object]::ReferenceEquals($heading.Parent,$rightLayout)) {throw '设备标题未放置于独立布局行。'}
+        if(-not [object]::ReferenceEquals($buttons.Parent,$rightLayout)) {throw '操作按钮未放置于独立布局行。'}
+        $actionBottom=$buttons.PointToScreen([Drawing.Point]::Empty).Y + $buttons.Height
+        $gridTop=$grid.PointToScreen([Drawing.Point]::Empty).Y
+        if($gridTop -lt $actionBottom - 1) {
+            throw "表格被工具栏遮挡：gridTop=$gridTop, actionsBottom=$actionBottom"
+        }
+        if(-not $grid.ColumnHeadersVisible -or $grid.ColumnHeadersHeight -lt 35) {
+            throw '参数标题行没有正确显示。'
+        }
+        if(-not $grid.AllowUserToResizeColumns -or $grid.Columns[5].Resizable -ne [Windows.Forms.DataGridViewTriState]::True) {
+            throw '列宽不能通过拖动表头分隔线调整。'
+        }
+        Write-Host ("布局覆盖检测通过：操作栏底={0}, 表格顶={1}, 标题行高度={2}" -f $actionBottom,$gridTop,$grid.ColumnHeadersHeight)
         foreach($testRoom in $tree.Nodes) {
             if($testRoom.Nodes.Count -ne 1) {throw '双服务加湿机：配件数量异常。'}
             $humidifierNode=$testRoom.Nodes[0]
@@ -1469,6 +1486,10 @@ if($GuiSmokeTest) {
             [Windows.Forms.Application]::DoEvents()
             if(-not $grid.Visible -or $grid.Height -lt 100 -or $split.Panel2.Width -lt 480) {
                 throw "双服务加湿机：详情表格不可见或尺寸异常。可见=$($grid.Visible)；尺寸=$($grid.Size)"
+            }
+            $firstRowRect=$grid.GetRowDisplayRectangle(0,$false)
+            if($firstRowRect.Y -lt $grid.ColumnHeadersHeight - 1) {
+                throw "第一行被表头覆盖：首行起点 $($firstRowRect.Y), 表头 $($grid.ColumnHeadersHeight)"
             }
             if($grid.DisplayedRowCount($false) -lt 2 -or $grid.GetRowDisplayRectangle(0,$false).Height -lt 15) {
                 throw "双服务加湿机：$($humidifierNode.Text) 的表格行没有实际显示。表格=$($grid.Bounds)；显示行数=$($grid.DisplayedRowCount($false))"
