@@ -748,6 +748,65 @@ if($SelfTest) {
         try {[void](Export-SafeCsv $source $badRows $false)} catch {$failed=$true}
         if(-not $failed) {throw '危险组地址被允许导出。'}
         if($safeRows[0].Values[6] -cne '1/0/1') {throw '失败的导出修改了源工作副本。'}
+        # v1.5: independent header ordering and extra Excel columns must not corrupt Thinka fields.
+        $variant=Join-Path $folder '改列顺序及自定义列.xlsx'
+        $srcZip=[IO.Compression.ZipFile]::OpenRead($safeExcel.Path)
+        $destZip=$null
+        try {
+            $sheetPath=Get-SheetPath $srcZip
+            $sheet=Read-ZipXml $srcZip $sheetPath
+            [System.Xml.XmlNamespaceManager]$ns=Get-XlsxNs $sheet
+            foreach($row in $sheet.SelectNodes('/x:worksheet/x:sheetData/x:row',$ns)) {
+                $num=$row.GetAttribute('r')
+                $b=$row.SelectSingleNode("x:c[@r='B$num']",$ns)
+                $h=$row.SelectSingleNode("x:c[@r='H$num']",$ns)
+                if($null -ne $b -and $null -ne $h) {
+                    $b.SetAttribute('r',"H$num")
+                    $h.SetAttribute('r',"B$num")
+                }
+                if($num -eq '1' -or $num -eq '2') {
+                    $newCell=$sheet.CreateElement('c',$script:xlsxNs)
+                    $newCell.SetAttribute('r',('N'+$num))
+                    $newCell.SetAttribute('t','inlineStr')
+                    $inner=$sheet.CreateElement('is',$script:xlsxNs)
+                    $value=$sheet.CreateElement('t',$script:xlsxNs)
+                    $value.InnerText=if($num -eq '1'){'备注'}else{'现场原始备注'}
+                    [void]$inner.AppendChild($value)
+                    [void]$newCell.AppendChild($inner)
+                    [void]$row.AppendChild($newCell)
+                }
+            }
+            $destZip=[IO.Compression.ZipArchive]::new([IO.File]::Create($variant),[IO.Compression.ZipArchiveMode]::Create,$false)
+            foreach($entry in $srcZip.Entries) {
+                $copy=$destZip.CreateEntry($entry.FullName,[IO.Compression.CompressionLevel]::Fastest)
+                $out=$copy.Open()
+                try {
+                    if($entry.FullName -ceq $sheetPath) {$sheet.Save($out)}
+                    else {
+                        $input=$entry.Open()
+                        try {$input.CopyTo($out)} finally {$input.Dispose()}
+                    }
+                } finally {$out.Dispose()}
+            }
+        } finally {
+            if($null -ne $destZip) {$destZip.Dispose()}
+            $srcZip.Dispose()
+        }
+        $columnsRead=Read-Xlsx $variant
+        Assert-ExportEqual $original $columnsRead $true
+        $columnsRead[0].Values[6]='1/0/7'
+        $preserved=Export-SafeExcel $variant $variant $columnsRead
+        $verify=Read-Xlsx $preserved.Path
+        if($verify[0].Values[6] -cne '1/0/7') {throw '重排列后的编辑组地址没有被保存。'}
+        $checkZip=[IO.Compression.ZipFile]::OpenRead($preserved.Path)
+        try {
+            $checkDoc=Read-ZipXml $checkZip (Get-SheetPath $checkZip)
+            [System.Xml.XmlNamespaceManager]$checkNs=Get-XlsxNs $checkDoc
+            $extra=$checkDoc.SelectSingleNode("//x:c[@r='N2']",$checkNs)
+            if((Read-CellText $extra $checkNs (Get-SharedStrings $checkZip)) -cne '现场原始备注') {
+                throw '保存 Excel 时丢失了自定义列。'
+            }
+        } finally {$checkZip.Dispose()}
         $watch.Stop()
         Write-Host ('自检通过：双向转换、批量新增、安全回读、UUID 分组、错误阻断和工作副本保护。') -ForegroundColor Green
         Write-Host ('自检共耗时：'+$watch.Elapsed.TotalSeconds.ToString('F2')+' 秒。测试文件：'+$folder)
