@@ -1,0 +1,50 @@
+name: Add v1.4.1 EXE to existing Release
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish-v1.4.1-exe.yml'
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  upload:
+    name: Add prebuilt EXE ZIP to v1.4.1 Release
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: v1.4.1
+      ASSET: Thinka_Excel_Converter_v1.4.1_EXE.zip
+      SOURCE_RUN: '39030168561'
+      SOURCE_ARTIFACT: Thinka_Excel_Converter_v1.4.1_EXE
+    steps:
+      - name: Ensure existing Release
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" --repo "$GH_REPO"
+
+      - name: Download verified Windows EXE build
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          gh run download "$SOURCE_RUN" --repo "$GH_REPO" \
+            --name "$SOURCE_ARTIFACT" --dir release-assets
+          test -s "release-assets/$ASSET"
+          unzip -Z1 "release-assets/$ASSET" | grep -Eq '(^|/)Thinka_Excel_Converter[.]exe$'
+          echo "Confirmed: EXE ZIP exists and contains Thinka_Excel_Converter.exe"
+
+      - name: Attach EXE to v1.4.1 without overwriting existing assets
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GH_REPO" --json assets \
+             --jq '.assets[].name' | grep -Fxq "$ASSET"; then
+            echo "Release already contains $ASSET. No changes."
+            exit 0
+          fi
+          gh release upload "$TAG" "release-assets/$ASSET" --repo "$GH_REPO"
+          gh release view "$TAG" --repo "$GH_REPO" --json assets --jq '.assets[].name'
