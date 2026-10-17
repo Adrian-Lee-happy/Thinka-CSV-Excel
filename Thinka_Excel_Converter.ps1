@@ -702,8 +702,33 @@ if($SelfTest) {
         if(-not $grouped[0].Values[1] -or $grouped[0].Values[1] -cne $grouped[1].Values[1] -or $grouped[0].Values[1] -cne $grouped[2].Values[1]) { throw '显式组号合并 UUID 失败。' }
         $checked=Check-File $groupedCsv.Path
         if($checked.Check.Errors.Count -gt 0) {throw '自检合规检查未通过。'}
+        # v1.5: verified Excel/CSV export and bulk-added rows.
+        $safeExcel=Export-SafeExcel $source '' $original
+        $safeRows=Read-Xlsx $safeExcel.Path
+        Assert-ExportEqual $original $safeRows $true
+        $safeCsv=Export-SafeCsv $source $safeRows $false
+        $roundtrip=Get-CsvData $safeCsv.Path
+        Assert-ExportEqual $original $roundtrip $false
+        $newValues=[string[]]@($safeRows[2].Values)
+        $newValues[2]='风速新增设备'
+        $newValues[6]='1/0/3'
+        $newValues[1]=''
+        $newRec=New-Record $newValues '' 101
+        $newRec.OriginOrder=0
+        [void]$safeRows.Add($newRec)
+        $bulk=Export-SafeCsv $source $safeRows $false
+        $bulkRead=Get-CsvData $bulk.Path
+        if($bulkRead.Count -ne 4 -or $bulkRead[3].Values[2] -cne '风速新增设备') {
+            throw 'Excel 批量新增记录导出错误。'
+        }
+        $badRows=Clone-Records $safeRows
+        $badRows[0].Values[6]='99/99/99'
+        $failed=$false
+        try {[void](Export-SafeCsv $source $badRows $false)} catch {$failed=$true}
+        if(-not $failed) {throw '危险组地址被允许导出。'}
+        if($safeRows[0].Values[6] -cne '1/0/1') {throw '失败的导出修改了源工作副本。'}
         $watch.Stop()
-        Write-Host ('自检通过：CSV↔Excel 字段一致；文本组地址未改变；单服务多行与跨服务组号 UUID 正确；合规检查通过。') -ForegroundColor Green
+        Write-Host ('自检通过：双向转换、批量新增、安全回读、UUID 分组、错误阻断和工作副本保护。') -ForegroundColor Green
         Write-Host ('自检共耗时：'+$watch.Elapsed.TotalSeconds.ToString('F2')+' 秒。测试文件：'+$folder)
         exit 0
     } catch {
@@ -1135,8 +1160,8 @@ $groupBtn.Add_Click({
     if($choices.Count -eq 0) {[void][Windows.Forms.MessageBox]::Show('同一房间内没有其他可组合的配件。');return}
     $picked=Pick-Choice $choices '选择要加入当前配件的服务'
     if($null -eq $picked) {return}
-    $left=@($selected.Tag)
-    $right=@($picked.Rows)
+    $left=@($selected.Tag | ForEach-Object {$_})
+    $right=@($picked.Rows | ForEach-Object {$_})
     $all=@($left)+@($right)
     $ids=Unique-Strings @($all | ForEach-Object {$_.Values[1]})
     if($ids.Length -gt 1) {
