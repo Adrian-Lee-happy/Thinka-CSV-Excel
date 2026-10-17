@@ -1,0 +1,4 @@
+"Room *","Accessory Id","Service Name *","Service Type *","Characteristic or Parameter","Characteristic or Parameter name *","read address","write address","manufacturer","model","serial number"
+"测试房间","","空调测试","Thermostat","characteristic","CurrentTemperature","1/0/1","","","",""
+"测试房间","","空调测试","Thermostat","parameter","PollingInterval","2000","","","",""
+"测试房间","","风速测试","Fan","characteristic","On","1/0/2","","","",""
