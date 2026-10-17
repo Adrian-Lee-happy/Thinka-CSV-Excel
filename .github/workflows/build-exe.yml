@@ -3,7 +3,7 @@ name: Build Windows GUI EXE
 on:
   workflow_dispatch:
   push:
-    branches: [main, 'feat/**']
+    branches: [main]
   pull_request:
     paths:
       - 'Thinka_Excel_Converter.ps1'
@@ -27,6 +27,12 @@ jobs:
         run: |
           powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File ".\Thinka_Excel_Converter.ps1" -SelfTest
           if ($LASTEXITCODE -ne 0) { throw "Source regression self-test failed ($LASTEXITCODE)." }
+
+      - name: Smoke test WinForms preview (STA)
+        shell: powershell
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File ".\Thinka_Excel_Converter.ps1" -GuiSmokeTest
+          if ($LASTEXITCODE -ne 0) { throw "WinForms GUI smoke test failed ($LASTEXITCODE)." }
 
       - name: Build GUI EXE (no console)
         shell: powershell
