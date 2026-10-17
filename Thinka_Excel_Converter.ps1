@@ -284,6 +284,17 @@ function Check-Records($records, [bool]$assignGrouped, [bool]$assignAll) {
     foreach($gkey in $groups.Keys) {
         $gsvc=$groups[$gkey]
         $differentIds=Unique-Strings @($gsvc | ForEach-Object { $_.Id })
+        $blank= @($gsvc | Where-Object {$_.Id -eq ''}).Count
+        if($differentIds.Length -eq 1 -and $blank -gt 0) {
+            $first=$gsvc[0]
+            [void]$warnings.Add("房间【$($first.Room)】配件组【$($first.Group)】同时包含已有 UUID 与空白 UUID；若由 Excel 复制设备产生，请核对组号，以免意外并入原配件。")
+        }
+        $sameType=@{}
+        foreach($svc in $gsvc) {
+            if($sameType.ContainsKey($svc.Type) -and $sameType[$svc.Type] -cne $svc.Name) {
+                [void]$warnings.Add("配件组【$($svc.Group)】存在多个同类型服务【$($svc.Type)】；如果复制了设备，请检查配件组号。")
+            } else {$sameType[$svc.Type]=$svc.Name}
+        }
         if($differentIds.Length -gt 1) {
             $first=$gsvc[0]
             [void]$errors.Add("房间【$($first.Room)】组号【$($first.Group)】内已经存在不同配件 ID：$($differentIds -join '、')。请先手动确认，程序不会覆盖。")
@@ -901,11 +912,11 @@ $split.Panel2.Controls.Add($issueList)
 $grid.BringToFront()
 $buttons.BringToFront()
 $heading.BringToFront()
-foreach($name in @('行号','服务名称','服务类型','特征或参数','参数名称','读取组地址','写入组地址','配件 UUID')) {
+foreach($name in @('行号','房间','服务名称','服务类型','特征或参数','参数名称','读取组地址','写入组地址','配件 UUID')) {
     [void]$grid.Columns.Add(('c'+$grid.Columns.Count),$name)
 }
-foreach($index in @(0,2,3,4)) {$grid.Columns[$index].ReadOnly=$true}
-$grid.Columns[7].Visible=$false
+foreach($index in @(0,3,4,5)) {$grid.Columns[$index].ReadOnly=$true}
+$grid.Columns[8].Visible=$false
 function Accessory-Key($rec) {
     $v=$rec.Values
     $prefix=$v[0]+[char]31
@@ -932,7 +943,7 @@ function Show-Device {
         $heading.Text=$node.Parent.Text+' / '+$node.Text
         foreach($rec in $node.Tag) {
             $v=$rec.Values
-            $i=$grid.Rows.Add($rec.Line,$v[2],$v[3],$v[4],$v[5],$v[6],$v[7],$v[1])
+            $i=$grid.Rows.Add($rec.Line,$v[0],$v[2],$v[3],$v[4],$v[5],$v[6],$v[7],$v[1])
             $grid.Rows[$i].Tag=$rec
         }
     } finally {$script:drawing=$false}
@@ -1054,15 +1065,18 @@ $grid.Add_CellEndEdit({
     $idx=$_.ColumnIndex;$row=$grid.Rows[$_.RowIndex]
     if($null -eq $row.Tag) {return}
     $rec=$row.Tag
-    $map=@{1=2;5=6;6=7;7=1}
+    $map=@{1=0;2=2;6=6;7=7;8=1}
     if(-not $map.ContainsKey($idx)) {return}
-    if($idx -eq 7 -and -not $advanced.Checked) {return}
+    if($idx -eq 8 -and -not $advanced.Checked) {return}
     $new=if($null -eq $row.Cells[$idx].Value){''}else{[string]$row.Cells[$idx].Value}
-    if($idx -eq 5 -or $idx -eq 6) {$new=Normalize-Address $new}
+    if($idx -eq 6 -or $idx -eq 7) {$new=Normalize-Address $new}
     $old=[string]$rec.Values[$map[$idx]]
     if($new -ceq $old) {return}
     Snapshot
-    if($idx -eq 1 -or $idx -eq 7) {
+    if($idx -eq 1) {
+        # Moving a device to another room also moves every service in that accessory.
+        foreach($item in $tree.SelectedNode.Tag) {$item.Values[0]=$new}
+    } elseif($idx -eq 2 -or $idx -eq 8) {
         $key=Service-Key $rec.Values
         foreach($item in $script:project) {
             if((Service-Key $item.Values) -ceq $key) {$item.Values[$map[$idx]]=$new}
@@ -1080,7 +1094,7 @@ function Do-Undo([bool]$redo) {
 }
 $tree.Add_AfterSelect({if(-not $script:drawing){Show-Device}})
 $filter.Add_TextChanged({if(-not $script:drawing){Rebuild-Tree 0}})
-$advanced.Add_CheckedChanged({$grid.Columns[7].Visible=$advanced.Checked})
+$advanced.Add_CheckedChanged({$grid.Columns[8].Visible=$advanced.Checked})
 $undoBtn.Add_Click({Do-Undo $false})
 $redoBtn.Add_Click({Do-Undo $true})
 $form.Add_KeyDown({
