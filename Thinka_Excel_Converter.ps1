@@ -1,0 +1,692 @@
+﻿# Thinka Excel Converter v1.4.1 | Windows PowerShell 5.1 | Direct Open XML (no Excel COM)
+# 11 original Thinka columns + one optional, Excel-only "配件组号" column.
+# The raw CSV parser/writer never converts KNX addresses to dates or numeric types.
+param([switch]$SelfTest)
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName Microsoft.VisualBasic
+Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+[System.Windows.Forms.Application]::EnableVisualStyles()
+$script:rawHeaders = @('Room *','Accessory Id','Service Name *','Service Type *','Characteristic or Parameter','Characteristic or Parameter name *','read address','write address','manufacturer','model','serial number')
+$script:cnHeaders = @('房间 *','配件 ID','服务名称 *','服务类型 *','特征或参数','特征或参数名称 *','读取组地址','写入组地址','制造商','型号','序列号')
+$script:groupHeader = '配件组号'
+$script:settingsPath = Join-Path $env:APPDATA 'ThinkaCsvConverter\output-folder.txt'
+$desktop = [Environment]::GetFolderPath('Desktop')
+$defaultFolder = Join-Path $desktop 'Thinka文件'
+$script:outputBase = $defaultFolder
+if ([IO.File]::Exists($script:settingsPath)) {
+    try { $saved = [IO.File]::ReadAllText($script:settingsPath).Trim(); if ($saved -and [IO.Directory]::Exists($saved) -and $saved.TrimEnd('\') -ine $desktop.TrimEnd('\')) { $script:outputBase = $saved } } catch {}
+}
+[void][IO.Directory]::CreateDirectory($script:outputBase)
+
+function New-ResultRows { return ,(New-Object 'System.Collections.Generic.List[object]') }
+function New-Record([string[]]$values, [string]$group, [int]$line) {
+    return [pscustomobject]@{ Values=$values; Group=$group; Line=$line }
+}
+function Unique-Target([string]$folder,[string]$name,[string]$extension) {
+    [void][IO.Directory]::CreateDirectory($folder)
+    $candidate = Join-Path $folder ($name + $extension); $n=1
+    while ([IO.File]::Exists($candidate)) { $candidate=Join-Path $folder ('{0}_{1}{2}' -f $name,$n,$extension); $n++ }
+    return $candidate
+}
+function Get-CsvData([string]$path) {
+    $utf8=New-Object System.Text.UTF8Encoding($false,$true)
+    $parser=New-Object Microsoft.VisualBasic.FileIO.TextFieldParser($path,$utf8,$true)
+    $parser.TextFieldType=[Microsoft.VisualBasic.FileIO.FieldType]::Delimited
+    $parser.SetDelimiters(',');$parser.HasFieldsEnclosedInQuotes=$true
+    $result=New-ResultRows; $line=0
+    try {
+        while(-not $parser.EndOfData) {
+            $parts=$parser.ReadFields(); $line++
+            if ($parts.Length -ne 11) { throw "CSV 第 $line 条记录不是 11 列（实际 $($parts.Length) 列），已停止。" }
+            if ($line -eq 1) {
+                for($c=0;$c -lt 11;$c++) { if ($parts[$c] -cne $script:rawHeaders[$c]) { throw "CSV 第 $($c+1) 列英文表头与 Thinka 原格式不符：$($parts[$c])" } }
+            } else {
+                [void]$result.Add((New-Record ([string[]]$parts) '' $line))
+            }
+        }
+    } finally { $parser.Close() }
+    if ($line -eq 0) { throw '空 CSV 文件。' }
+    return ,$result
+}
+# XLSX is an Open XML ZIP package. Read it directly: no Excel process or per-cell COM calls.
+$script:xlsxNs='http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+$script:relsNs='http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+function Get-XlsxNs($doc) {
+    $mgr=[System.Xml.XmlNamespaceManager]::new($doc.NameTable)
+    $mgr.AddNamespace('x',$script:xlsxNs)
+    # XmlNamespaceManager implements IEnumerable; PowerShell must return it as one object.
+    return ,$mgr
+}
+function Read-ZipXml($zip,[string]$name) {
+    $entry=$zip.GetEntry($name)
+    if($null -eq $entry) { throw "Excel 文件缺少必要组件：$name" }
+    $stream=$entry.Open()
+    try {
+        $doc=New-Object System.Xml.XmlDocument
+        $doc.XmlResolver=$null
+        $doc.PreserveWhitespace=$true
+        $doc.Load($stream)
+        # Keep the XmlDocument itself intact rather than enumerating XML child nodes.
+        return ,$doc
+    } finally { $stream.Dispose() }
+}
+function Get-SheetPath($zip) {
+    $workbook=Read-ZipXml $zip 'xl/workbook.xml'
+    [System.Xml.XmlNamespaceManager]$mgr=Get-XlsxNs $workbook
+    $first=$workbook.SelectSingleNode('/x:workbook/x:sheets/x:sheet[1]',$mgr)
+    if($null -eq $first) { throw 'Excel 工作簿中找不到工作表。' }
+    $relId=$first.GetAttribute('id',$script:relsNs)
+    $rels=Read-ZipXml $zip 'xl/_rels/workbook.xml.rels'
+    $target=''
+    foreach($rel in $rels.DocumentElement.ChildNodes) {
+        if($rel.LocalName -eq 'Relationship' -and $rel.GetAttribute('Id') -ceq $relId) {
+            $target=$rel.GetAttribute('Target'); break
+        }
+    }
+    if(-not $target) { throw '无法定位 Excel 第一个工作表。' }
+    $resolved=[uri]::new([uri]'https://xlsx.local/xl/workbook.xml',$target.Replace([char]92,[char]47))
+    $path=[uri]::UnescapeDataString($resolved.AbsolutePath).TrimStart('/')
+    if(-not $path.StartsWith('xl/')) { throw 'Excel 工作表路径异常。' }
+    return $path
+}
+function Get-ColumnNumber([string]$reference) {
+    $number=0
+    foreach($ch in $reference.ToUpperInvariant().ToCharArray()) {
+        if($ch -lt 'A' -or $ch -gt 'Z') {break}
+        $number=$number*26+([int][char]$ch-[int][char]'A'+1)
+    }
+    return $number
+}
+function Get-ColumnName([int]$number) {
+    $name=''
+    while($number -gt 0) {
+        $number--; $name=([char](65+($number%26))).ToString()+$name
+        $number=[int][math]::Floor($number/26)
+    }
+    return $name
+}
+function Get-SharedStrings($zip) {
+    $values=New-Object 'System.Collections.Generic.List[string]'
+    if($null -eq $zip.GetEntry('xl/sharedStrings.xml')) { return ,$values }
+    $doc=Read-ZipXml $zip 'xl/sharedStrings.xml'
+    [System.Xml.XmlNamespaceManager]$mgr=Get-XlsxNs $doc
+    foreach($si in $doc.SelectNodes('/x:sst/x:si',$mgr)) {
+        $builder=New-Object System.Text.StringBuilder
+        foreach($t in $si.SelectNodes('x:t | x:r/x:t',$mgr)) { [void]$builder.Append($t.InnerText) }
+        [void]$values.Add($builder.ToString())
+    }
+    return ,$values
+}
+function Read-CellText($cell,$ns,$strings) {
+    if($null -eq $cell) {return ''}
+    if($null -ne $cell.SelectSingleNode('x:f',$ns)) { throw "Excel 单元格 $($cell.GetAttribute('r')) 包含公式；请粘贴为普通文本。" }
+    $kind=$cell.GetAttribute('t')
+    if($kind -eq 'inlineStr') {
+        $builder=New-Object System.Text.StringBuilder
+        foreach($t in $cell.SelectNodes('x:is/x:t | x:is/x:r/x:t',$ns)) { [void]$builder.Append($t.InnerText) }
+        return $builder.ToString()
+    }
+    $v=$cell.SelectSingleNode('x:v',$ns)
+    if($null -eq $v) {return ''}
+    if($kind -eq 's') {
+        $i=0
+        if(-not [int]::TryParse($v.InnerText,[ref]$i) -or $i -lt 0 -or $i -ge $strings.Count) { throw "无效的 Excel 共享文本索引：$($v.InnerText)" }
+        return [string]$strings[$i]
+    }
+    if($kind -eq 'e') { throw "Excel 单元格 $($cell.GetAttribute('r')) 有错误值：$($v.InnerText)" }
+    return [string]$v.InnerText
+}
+function Read-Xlsx([string]$path) {
+    $zip=[IO.Compression.ZipFile]::OpenRead($path)
+    try {
+        $sheetName=Get-SheetPath $zip
+        $doc=Read-ZipXml $zip $sheetName
+        [System.Xml.XmlNamespaceManager]$ns=Get-XlsxNs $doc
+        $strings=Get-SharedStrings $zip
+        $rowNodes=$doc.SelectNodes('/x:worksheet/x:sheetData/x:row',$ns)
+        if($rowNodes.Count -eq 0) { throw 'Excel 工作表为空。' }
+        $header=@{}
+        foreach($cell in $rowNodes[0].SelectNodes('x:c',$ns)) { $header[(Get-ColumnNumber ($cell.GetAttribute('r')))]=Read-CellText $cell $ns $strings }
+        $offset=0
+        if($header.ContainsKey(1) -and $header[1] -ceq $script:groupHeader) {$offset=1}
+        for($c=0;$c -lt 11;$c++) {
+            $column=$c+1+$offset
+            $actual=if($header.ContainsKey($column)) {[string]$header[$column]} else {''}
+            if($actual -cne $script:cnHeaders[$c]) { throw "Excel 第 $column 列标题不符合模板。应为【$($script:cnHeaders[$c])】，实际为【$actual】。" }
+        }
+        $records=New-ResultRows
+        foreach($row in $rowNodes) {
+            $r=0
+            if(-not [int]::TryParse($row.GetAttribute('r'),[ref]$r)) {continue}
+            if($r -le 1) {continue}
+            if($r -gt 100000) {throw '检测到 Excel 使用区域超过10万行，请清除尾部多余格式后重试。'}
+            $values=@{}
+            foreach($cell in $row.SelectNodes('x:c',$ns)) {
+                $col=Get-ColumnNumber ($cell.GetAttribute('r'))
+                if($col -le (11+$offset)) {$values[$col]=Read-CellText $cell $ns $strings}
+            }
+            $v=[string[]]::new(11);$group='';$hasContent=$false
+            if($offset -eq 1 -and $values.ContainsKey(1)) {$group=([string]$values[1]).Trim();if($group -ne ''){$hasContent=$true}}
+            for($c=0;$c -lt 11;$c++) {
+                $col=$c+1+$offset
+                if($values.ContainsKey($col)) {$v[$c]=[string]$values[$col]} else {$v[$c]=''}
+                if($v[$c].Length -gt 0) {$hasContent=$true}
+            }
+            if($hasContent) { [void]$records.Add((New-Record $v $group $r)) }
+        }
+        return ,$records
+    } finally { $zip.Dispose() }
+}
+function Service-Key($values) { return ($values[0] + [char]31 + $values[2] + [char]31 + $values[3]) }
+function Group-Key($values,[string]$group) { return ($values[0] + [char]31 + $group) }
+function Unique-Strings($items) {
+    $unique=New-Object 'System.Collections.Generic.List[string]'
+    foreach($item in $items) { if($null -ne $item -and $item -ne '' -and -not $unique.Contains([string]$item)) { [void]$unique.Add([string]$item) } }
+    return ,$unique.ToArray()
+}
+function Get-KnxGroupError([string]$value) {
+    if($value -eq '') {return ''}
+    $parts=$value.Split('/')
+    if($parts.Length -eq 3) {
+        if($value -cnotmatch '^\d+/\d+/\d+$') {return '不是有效的三段式 KNX 组地址'}
+        $a=0;$b=0;$c=0
+        if(-not [int]::TryParse($parts[0],[ref]$a) -or -not [int]::TryParse($parts[1],[ref]$b) -or -not [int]::TryParse($parts[2],[ref]$c)) {return '组地址数字过大'}
+        if($a -gt 31 -or $b -gt 7 -or $c -gt 255) {return '三段式组地址超出 0-31/0-7/0-255 范围'}
+        return ''
+    }
+    if($parts.Length -eq 2) {
+        if($value -cnotmatch '^\d+/\d+$') {return '不是有效的两段式 KNX 组地址'}
+        $a=0;$b=0
+        if(-not [int]::TryParse($parts[0],[ref]$a) -or -not [int]::TryParse($parts[1],[ref]$b)) {return '组地址数字过大'}
+        if($a -gt 31 -or $b -gt 2047) {return '两段式组地址超出 0-31/0-2047 范围'}
+        return ''
+    }
+    return '组地址不是两段或三段形式（也可能被 Excel 转成日期）'
+}
+function Check-Records($records, [bool]$assignGrouped, [bool]$assignAll) {
+    $errors=New-Object 'System.Collections.Generic.List[string]'
+    $warnings=New-Object 'System.Collections.Generic.List[string]'
+    $services=@{}; $groups=@{}; $fingerprints=@{}
+    $uuidPattern='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+    foreach($rec in $records) {
+        $v=$rec.Values; $line=$rec.Line
+        foreach($idx in @(0,2,3,4,5)) { if([string]::IsNullOrWhiteSpace($v[$idx])) { [void]$errors.Add("第 $line 行【$($script:cnHeaders[$idx])】不能为空。") } }
+        if($v[1] -and $v[1] -cnotmatch $uuidPattern) { [void]$errors.Add("第 $line 行的配件 ID 不是标准 UUID 格式：$($v[1])") }
+        if($v[4] -and $v[4] -cnotin @('characteristic','parameter')) { [void]$errors.Add("第 $line 行【特征或参数】应为 characteristic 或 parameter。") }
+        if($v[4] -eq 'characteristic') {
+            foreach($idx in @(6,7)) {
+                if($v[$idx] -ne '') { $err=Get-KnxGroupError $v[$idx]; if($err) {[void]$errors.Add("第 $line 行【$($script:cnHeaders[$idx])】$($v[$idx])：$err") } }
+            }
+            if($v[6] -eq '' -and $v[7] -eq '') { [void]$warnings.Add("第 $line 行的特征 $($v[5]) 没有读写组地址，请确认是否有意留空。") }
+        }
+        if($v[4] -eq 'parameter' -and $v[7] -ne '') { [void]$warnings.Add("第 $line 行参数【$($v[5])】有写入地址，请确认 Thinka 是否支持该用法。") }
+        $serviceKey=Service-Key $v
+        if(-not $services.ContainsKey($serviceKey)) {
+            $services[$serviceKey]=[pscustomobject]@{Key=$serviceKey;Room=$v[0];Name=$v[2];Type=$v[3];Members=(New-ResultRows);GroupLabels=(New-Object 'System.Collections.Generic.List[string]');IDs=(New-Object 'System.Collections.Generic.List[string]'); Group='';Id=''}
+        }
+        $svc=$services[$serviceKey]
+        [void]$svc.Members.Add($rec)
+        if($rec.Group -ne '' -and -not $svc.GroupLabels.Contains($rec.Group)) { [void]$svc.GroupLabels.Add($rec.Group) }
+        if($v[1] -ne '' -and -not $svc.IDs.Contains($v[1])) { [void]$svc.IDs.Add($v[1]) }
+        $fingerprint= $serviceKey + [char]31 + $v[4] + [char]31 + $v[5]
+        if($fingerprints.ContainsKey($fingerprint)) { [void]$errors.Add("第 $line 行：同一服务的特征/参数【$($v[5])】重复，首次出现在第 $($fingerprints[$fingerprint]) 行。") }
+        else {$fingerprints[$fingerprint]=$line}
+    }
+    foreach($svc in $services.Values) {
+        if($svc.GroupLabels.Count -gt 1) { [void]$errors.Add("房间【$($svc.Room)】服务【$($svc.Name)】出现多个配件组号：$($svc.GroupLabels -join '、')") }
+        if($svc.IDs.Count -gt 1) { [void]$errors.Add("房间【$($svc.Room)】服务【$($svc.Name)】的多行参数有不同配件 ID：$($svc.IDs -join '、')") }
+        if($svc.GroupLabels.Count -eq 1) { $svc.Group=[string]$svc.GroupLabels[0] }
+        if($svc.IDs.Count -eq 1) { $svc.Id=[string]$svc.IDs[0] }
+        if($svc.Group -ne '') {
+            $gkey=$svc.Room + [char]31 + $svc.Group
+            if(-not $groups.ContainsKey($gkey)) { $groups[$gkey]=New-ResultRows }
+            [void]$groups[$gkey].Add($svc)
+        }
+    }
+    foreach($gkey in $groups.Keys) {
+        $gsvc=$groups[$gkey]
+        $differentIds=Unique-Strings @($gsvc | ForEach-Object { $_.Id })
+        if($differentIds.Length -gt 1) {
+            $first=$gsvc[0]
+            [void]$errors.Add("房间【$($first.Room)】组号【$($first.Group)】内已经存在不同配件 ID：$($differentIds -join '、')。请先手动确认，程序不会覆盖。")
+        }
+    }
+    # Same UUID may not point to two differently typed services with identical name.
+    $named=@{}
+    foreach($svc in $services.Values) {
+        if($svc.Id -eq '') {continue}
+        $signature=$svc.Id.ToLowerInvariant()+[char]31+$svc.Name
+        if($named.ContainsKey($signature) -and $named[$signature] -cne $svc.Type) {
+            [void]$errors.Add("配件【$($svc.Id)】内服务名称【$($svc.Name)】重复，却具有不同服务类型：$($named[$signature]) / $($svc.Type)。")
+        } else {$named[$signature]=$svc.Type}
+    }
+    # A copied old UUID can silently merge two separate devices. Flag suspicious same-type reuse.
+    $idServiceTypes=@{}
+    foreach($svc in $services.Values) {
+        if($svc.Id -eq '') {continue}
+        $tag=$svc.Id.ToLowerInvariant()+[char]31+$svc.Type
+        if(-not $idServiceTypes.ContainsKey($tag)) {$idServiceTypes[$tag]=New-Object 'System.Collections.Generic.List[string]'}
+        if(-not $idServiceTypes[$tag].Contains($svc.Name)) { [void]$idServiceTypes[$tag].Add($svc.Name) }
+    }
+    foreach($tag in $idServiceTypes.Keys) {
+        if($idServiceTypes[$tag].Count -gt 1) {
+            [void]$warnings.Add("一个 UUID 被多个同类型服务复用：$($idServiceTypes[$tag] -join '、')。如果是复制旧设备产生的，请清空新设备的旧 ID。")
+        }
+    }
+    # If one accessory has services in different explicit groups, stop before modifying any ID.
+    $ownerGroups=@{}
+    foreach($svc in $services.Values) {
+        if($svc.Id -eq '' -or $svc.Group -eq '') {continue}
+        $owner=$svc.Id.ToLowerInvariant()
+        $gkey=$svc.Room+[char]31+$svc.Group
+        if($ownerGroups.ContainsKey($owner) -and $ownerGroups[$owner] -cne $gkey) {
+            [void]$errors.Add("配件 ID【$owner】同时分配给了不同的显式配件组号，不能自动处理。")
+        } else {$ownerGroups[$owner]=$gkey}
+    }
+    if($errors.Count -eq 0 -and ($assignGrouped -or $assignAll)) {
+        foreach($gkey in $groups.Keys) {
+            $gsvc=$groups[$gkey]
+            $known=Unique-Strings @($gsvc | ForEach-Object { $_.Id })
+            $chosen=if($known.Length -eq 1) { $known[0] } else { [Guid]::NewGuid().ToString() }
+            foreach($svc in $gsvc) {$svc.Id=$chosen}
+        }
+        if($assignAll) {
+            foreach($svc in $services.Values) { if($svc.Id -eq '') { $svc.Id=[Guid]::NewGuid().ToString() } }
+        }
+        # Before applying any changes check new effective IDs for conflicting service names.
+        $named=@{}
+        foreach($svc in $services.Values) {
+            if($svc.Id -eq '') {continue}
+            $signature=$svc.Id.ToLowerInvariant()+[char]31+$svc.Name
+            if($named.ContainsKey($signature) -and $named[$signature] -cne $svc.Type) {
+                [void]$errors.Add("分组后配件【$($svc.Id)】内服务名称【$($svc.Name)】冲突，类型：$($named[$signature]) / $($svc.Type)。请改服务名称。")
+            } else { $named[$signature]=$svc.Type }
+        }
+    }
+    $changed=0
+    if($errors.Count -eq 0 -and ($assignGrouped -or $assignAll)) {
+        foreach($svc in $services.Values) {
+            if($svc.Id -eq '') {continue}
+            foreach($rec in $svc.Members) {
+                if($rec.Values[1] -ne $svc.Id) {$rec.Values[1]=$svc.Id;$changed++}
+            }
+        }
+    }
+    $allIds=Unique-Strings @($services.Values | ForEach-Object {$_.Id})
+    return [pscustomobject]@{ Errors=$errors; Warnings=$warnings; Services=$services.Count; Groups=$groups.Count; IDs=$allIds.Length; Rows=$records.Count; UpdatedRows=$changed; Records=$records }
+}
+function Throw-IfInvalid($checked) {
+    if($checked.Errors.Count -gt 0) {
+        $first=@($checked.Errors | Select-Object -First 6)
+        throw "检测到 $($checked.Errors.Count) 项错误，已停止，文件未输出：`r`n$($first -join "`r`n")"
+    }
+}
+function Add-ZipText($zip,[string]$name,[string]$text) {
+    $entry=$zip.CreateEntry($name,[IO.Compression.CompressionLevel]::Fastest)
+    $stream=$entry.Open()
+    try {
+        $writer=[System.IO.StreamWriter]::new($stream,[System.Text.UTF8Encoding]::new($false))
+        try {$writer.Write($text)} finally {$writer.Dispose()}
+    } finally {$stream.Dispose()}
+}
+# Excel-compatible text-only styles. Numeric-looking GA/UUID/parameters remain text.
+$script:stylesXml=@'
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="2"><font><sz val="10"/><name val="Microsoft YaHei UI"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Microsoft YaHei UI"/></font></fonts>
+  <fills count="5"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF194578"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFF0F6FF"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FF51427D"/><bgColor indexed="64"/></patternFill></fill></fills>
+  <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="4"><xf numFmtId="49" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="49" fontId="1" fillId="2" borderId="0" xfId="0" applyFill="1" applyFont="1" applyNumberFormat="1"/><xf numFmtId="49" fontId="0" fillId="3" borderId="0" xfId="0" applyFill="1" applyNumberFormat="1"/><xf numFmtId="49" fontId="1" fillId="4" borderId="0" xfId="0" applyFill="1" applyFont="1" applyNumberFormat="1"/></cellXfs>
+  <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
+</styleSheet>
+'@
+function Write-XlsxCell($writer,[string]$ref,[string]$value,[int]$style) {
+    if($value -eq '') {return}
+    $writer.WriteStartElement('c',$script:xlsxNs)
+    $writer.WriteAttributeString('r',$ref)
+    $writer.WriteAttributeString('s',[string]$style)
+    $writer.WriteAttributeString('t','inlineStr')
+    $writer.WriteStartElement('is',$script:xlsxNs)
+    $writer.WriteStartElement('t',$script:xlsxNs)
+    $writer.WriteAttributeString('xml','space','http://www.w3.org/XML/1998/namespace','preserve')
+    $writer.WriteString($value)
+    $writer.WriteEndElement();$writer.WriteEndElement();$writer.WriteEndElement()
+}
+function Write-Xlsx([string]$target,$records) {
+    $zip=$null;$file=$null
+    try {
+        $file=[IO.File]::Create($target)
+        $zip=[IO.Compression.ZipArchive]::new($file,[IO.Compression.ZipArchiveMode]::Create,$false)
+        Add-ZipText $zip '[Content_Types].xml' '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>'
+        Add-ZipText $zip '_rels/.rels' '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'
+        Add-ZipText $zip 'xl/workbook.xml' '<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><bookViews><workbookView/></bookViews><sheets><sheet name="Thinka设备" sheetId="1" r:id="rId1"/></sheets></workbook>'
+        Add-ZipText $zip 'xl/_rels/workbook.xml.rels' '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>'
+        Add-ZipText $zip 'xl/styles.xml' ($script:stylesXml.Trim())
+        $entry=$zip.CreateEntry('xl/worksheets/sheet1.xml',[IO.Compression.CompressionLevel]::Fastest)
+        $stream=$entry.Open()
+        try {
+            $opts=New-Object System.Xml.XmlWriterSettings
+            $opts.Encoding=[System.Text.UTF8Encoding]::new($false)
+            $opts.Indent=$false
+            $writer=[System.Xml.XmlWriter]::Create($stream,$opts)
+            try {
+                $ns=$script:xlsxNs
+                $lastRow=[math]::Max(1,$records.Count+1)
+                $writer.WriteStartDocument()
+                $writer.WriteStartElement('worksheet',$ns)
+                $writer.WriteStartElement('dimension',$ns);$writer.WriteAttributeString('ref',"A1:L$lastRow");$writer.WriteEndElement()
+                $writer.WriteStartElement('sheetViews',$ns)
+                $writer.WriteStartElement('sheetView',$ns);$writer.WriteAttributeString('workbookViewId','0')
+                $writer.WriteStartElement('pane',$ns)
+                $writer.WriteAttributeString('xSplit','1');$writer.WriteAttributeString('ySplit','1')
+                $writer.WriteAttributeString('topLeftCell','B2');$writer.WriteAttributeString('activePane','bottomRight');$writer.WriteAttributeString('state','frozen')
+                $writer.WriteEndElement();$writer.WriteEndElement();$writer.WriteEndElement()
+                $writer.WriteStartElement('sheetFormatPr',$ns);$writer.WriteAttributeString('defaultRowHeight','17');$writer.WriteEndElement()
+                $writer.WriteStartElement('cols',$ns)
+                $widths=@(14,17,41,27,23,22,38,19,19,21,23,23)
+                for($c=1;$c -le 12;$c++) {
+                    $writer.WriteStartElement('col',$ns)
+                    $writer.WriteAttributeString('min',[string]$c);$writer.WriteAttributeString('max',[string]$c)
+                    $writer.WriteAttributeString('width',[string]$widths[$c-1]);$writer.WriteAttributeString('customWidth','1')
+                    $writer.WriteEndElement()
+                }
+                $writer.WriteEndElement()
+                $writer.WriteStartElement('sheetData',$ns)
+                $writer.WriteStartElement('row',$ns);$writer.WriteAttributeString('r','1');$writer.WriteAttributeString('ht','32');$writer.WriteAttributeString('customHeight','1')
+                $heads=@($script:groupHeader)+@($script:cnHeaders)
+                for($c=1;$c -le 12;$c++) { $style=if($c -eq 1){3}else{1};Write-XlsxCell $writer ((Get-ColumnName $c)+'1') ([string]$heads[$c-1]) $style }
+                $writer.WriteEndElement()
+                $row=2
+                foreach($rec in $records) {
+                    $writer.WriteStartElement('row',$ns);$writer.WriteAttributeString('r',[string]$row)
+                    Write-XlsxCell $writer ('A'+$row) ([string]$rec.Group) 2
+                    for($c=0;$c -lt 11;$c++) { Write-XlsxCell $writer ((Get-ColumnName ($c+2))+$row) ([string]$rec.Values[$c]) 0 }
+                    $writer.WriteEndElement();$row++
+                }
+                $writer.WriteEndElement()
+                $writer.WriteStartElement('autoFilter',$ns);$writer.WriteAttributeString('ref',"A1:L$lastRow");$writer.WriteEndElement()
+                $writer.WriteEndElement();$writer.WriteEndDocument();$writer.Flush()
+            } finally {$writer.Dispose()}
+        } finally {$stream.Dispose()}
+    } finally { if($null -ne $zip){$zip.Dispose()} elseif($null -ne $file){$file.Dispose()} }
+}
+function Csv-Quote([string]$s) { return '"' + $s.Replace('"','""') + '"' }
+function Write-Csv([string]$path,$records) {
+    $builder=New-Object System.Text.StringBuilder
+    [void]$builder.Append((@($script:rawHeaders | ForEach-Object { Csv-Quote $_ }) -join ','))
+    foreach($rec in $records) {
+        [void]$builder.Append("`n")
+        [void]$builder.Append((@($rec.Values | ForEach-Object { Csv-Quote $_ }) -join ','))
+    }
+    $utf8=New-Object System.Text.UTF8Encoding($false)
+    [IO.File]::WriteAllText($path,$builder.ToString(),$utf8)
+}
+function Save-FilledExcel([string]$source,[string]$destination,$records) {
+    # Copy the complete XLSX ZIP package and patch only the Accessory Id cells in sheet 1.
+    # Keeps the user's colors, widths, extra sheets, custom workbook settings, etc.
+    $sourceZip=$null;$destinationZip=$null;$destinationFile=$null
+    try {
+        $sourceZip=[IO.Compression.ZipFile]::OpenRead($source)
+        $sheetPath=Get-SheetPath $sourceZip
+        $doc=Read-ZipXml $sourceZip $sheetPath
+        [System.Xml.XmlNamespaceManager]$ns=Get-XlsxNs $doc
+        $first=$doc.SelectSingleNode('/x:worksheet/x:sheetData/x:row[@r="1"]',$ns)
+        if($null -eq $first) {throw '找不到第一行标题。'}
+        $firstCell=$first.SelectSingleNode('x:c[@r="A1"]',$ns)
+        $strings=Get-SharedStrings $sourceZip
+        $grouped=(Read-CellText $firstCell $ns $strings) -ceq $script:groupHeader
+        $idColumn=if($grouped){3}else{2}
+        $idLetter=Get-ColumnName $idColumn
+        $rows=@{}
+        foreach($node in $doc.SelectNodes('/x:worksheet/x:sheetData/x:row',$ns)) { $rows[[int]$node.GetAttribute('r')]=$node }
+        foreach($rec in $records) {
+            $id=[string]$rec.Values[1]
+            $r=[int]$rec.Line
+            if(-not $rows.ContainsKey($r)) {throw "无法定位原 Excel 第 $r 行。"}
+            $row=$rows[$r]
+            $ref=$idLetter+$r
+            $cell=$row.SelectSingleNode("x:c[@r='$ref']",$ns)
+            $before=Read-CellText $cell $ns $strings
+            if($before -ceq $id) {continue}
+            if($null -eq $cell) {
+                $cell=$doc.CreateElement('c',$script:xlsxNs)
+                $cell.SetAttribute('r',$ref)
+                $cell.SetAttribute('s','0')
+                $inserted=$false
+                foreach($next in $row.SelectNodes('x:c',$ns)) {
+                    if((Get-ColumnNumber ($next.GetAttribute('r'))) -gt $idColumn) {
+                        [void]$row.InsertBefore($cell,$next);$inserted=$true;break
+                    }
+                }
+                if(-not $inserted) { [void]$row.AppendChild($cell) }
+            }
+            foreach($child in @($cell.ChildNodes)) { [void]$cell.RemoveChild($child) }
+            $cell.SetAttribute('t','inlineStr')
+            $is=$doc.CreateElement('is',$script:xlsxNs)
+            $t=$doc.CreateElement('t',$script:xlsxNs)
+            $t.SetAttribute('space','http://www.w3.org/XML/1998/namespace','preserve')
+            $t.InnerText=$id
+            [void]$is.AppendChild($t);[void]$cell.AppendChild($is)
+        }
+        $destinationFile=[IO.File]::Create($destination)
+        $destinationZip=[IO.Compression.ZipArchive]::new($destinationFile,[IO.Compression.ZipArchiveMode]::Create,$false)
+        foreach($entry in $sourceZip.Entries) {
+            $copy=$destinationZip.CreateEntry($entry.FullName,[IO.Compression.CompressionLevel]::Fastest)
+            $out=$copy.Open()
+            try {
+                if($entry.FullName -ceq $sheetPath) { $doc.Save($out) }
+                else {
+                    $input=$entry.Open()
+                    try { $input.CopyTo($out) } finally { $input.Dispose() }
+                }
+            } finally { $out.Dispose() }
+        }
+    } finally {
+        if($null -ne $destinationZip) {$destinationZip.Dispose()}
+        elseif($null -ne $destinationFile) {$destinationFile.Dispose()}
+        if($null -ne $sourceZip) {$sourceZip.Dispose()}
+    }
+}
+function Generate-AllExcel([string]$path) {
+    $records=Read-Xlsx $path
+    $check=Check-Records $records $true $true
+    Throw-IfInvalid $check
+    $target=Unique-Target (Join-Path $script:outputBase '修改') (([IO.Path]::GetFileNameWithoutExtension($path))+'_已补齐UUID') '.xlsx'
+    # Save a new copy of the user's workbook, preserving custom worksheet formatting.
+    Save-FilledExcel $path $target $records
+    return [pscustomobject]@{Path=$target;Check=$check}
+}
+function Convert-ToXlsx([string]$source) {
+    $records=Get-CsvData $source
+    $check=Check-Records $records $false $false
+    $target=Unique-Target (Join-Path $script:outputBase '修改') ([IO.Path]::GetFileNameWithoutExtension($source)) '.xlsx'
+    Write-Xlsx $target $records
+    return [pscustomobject]@{Path=$target;Check=$check}
+}
+function Convert-ToCsv([string]$source,[bool]$generateAll) {
+    $records=Read-Xlsx $source
+    $check=Check-Records $records $true $generateAll
+    Throw-IfInvalid $check
+    $target=Unique-Target (Join-Path $script:outputBase 'thinka') ([IO.Path]::GetFileNameWithoutExtension($source)) '.csv'
+    Write-Csv $target $records
+    $updatedXlsx=''
+    if($check.UpdatedRows -gt 0) {
+        # Preserve generated UUID values in an editable Excel copy so later exports stay stable.
+        $updatedXlsx=Unique-Target (Join-Path $script:outputBase '修改') (([IO.Path]::GetFileNameWithoutExtension($source))+'_已写入UUID') '.xlsx'
+        try { Save-FilledExcel $source $updatedXlsx $records }
+        catch { $updatedXlsx=''; Write-Log '提醒：CSV 已生成，但保存已补齐 UUID 的 Excel 副本失败。以后重复转换原 Excel 会生成不同 UUID，请不要直接重复导入。' }
+    }
+    return [pscustomobject]@{Path=$target;Check=$check;UpdatedXlsx=$updatedXlsx}
+}
+function Check-File([string]$path) {
+    $extension=[IO.Path]::GetExtension($path).ToLowerInvariant()
+    if($extension -eq '.csv') {$records=Get-CsvData $path} elseif($extension -eq '.xlsx') {$records=Read-Xlsx $path} else {throw '只能检测 CSV 或 XLSX。'}
+    # For validation, determine potential grouped collisions, but do not alter the original source.
+    $check=Check-Records $records $true $false
+    if($extension -eq '.csv') {
+        $fs=[IO.File]::OpenRead($path)
+        try {
+            if($fs.Length -ge 3) {
+                $b0=$fs.ReadByte(); $b1=$fs.ReadByte(); $b2=$fs.ReadByte()
+                if($b0 -eq 239 -and $b1 -eq 187 -and $b2 -eq 191) {
+                    [void]$check.Errors.Add('CSV 以 UTF-8 BOM 开头；当前 Thinka 原始样本不带 BOM。请使用右侧导出无 BOM 版本。')
+                }
+            }
+        } finally { $fs.Close() }
+    }
+    $status=if($check.Errors.Count -eq 0) {'通过基础结构与已知规则检测'} else {'未通过'}
+    $lines=New-Object 'System.Collections.Generic.List[string]'
+    foreach($line in @('Thinka CSV / Excel 合规检测报告','',"来源文件：$path","检测结论：$status","数据记录：$($check.Rows)","服务数量：$($check.Services)","显式配件组：$($check.Groups)","错误：$($check.Errors.Count)","提醒：$($check.Warnings.Count)",'', '【错误】')) {[void]$lines.Add($line)}
+    if($check.Errors.Count -eq 0) {[void]$lines.Add('无')} else {foreach($i in $check.Errors) {[void]$lines.Add('× '+$i)}}
+    [void]$lines.Add('');[void]$lines.Add('【提醒】')
+    if($check.Warnings.Count -eq 0) {[void]$lines.Add('无')} else {foreach($i in $check.Warnings) {[void]$lines.Add('! '+$i)}}
+    [void]$lines.Add('');[void]$lines.Add('说明：本工具只依据 CSV 结构、格式和本项目验证过的规则进行静态检查。无法保证 Thinka 能接受所有服务类型、参数组合，必须由 Thinka 导入实测确认。')
+    $target=Unique-Target (Join-Path $script:outputBase '检查报告') ([IO.Path]::GetFileNameWithoutExtension($path)+'_检查报告') '.txt'
+    [IO.File]::WriteAllLines($target,$lines.ToArray(),(New-Object System.Text.UTF8Encoding($true)))
+    return [pscustomobject]@{Path=$target;Check=$check}
+}
+
+
+# Offline regression test. Run with -SelfTest or double-click "运行自检.cmd".
+if($SelfTest) {
+    $watch=[Diagnostics.Stopwatch]::StartNew()
+    $folder=Join-Path ([IO.Path]::GetTempPath()) ('Thinka_v14_selftest_'+[guid]::NewGuid().ToString('N'))
+    [void][IO.Directory]::CreateDirectory($folder)
+    $script:outputBase=$folder
+    try {
+        $source=Join-Path $PSScriptRoot '测试数据\三行示例.csv'
+        if(-not [IO.File]::Exists($source)) { throw '自检示例 CSV 丢失。' }
+        $original=Get-CsvData $source
+        $converted=Convert-ToXlsx $source
+        $excelRows=Read-Xlsx $converted.Path
+        if($original.Count -ne $excelRows.Count) {throw 'CSV -> Excel 行数错误。'}
+        for($i=0;$i -lt $original.Count;$i++) {
+            for($j=0;$j -lt 11;$j++) {
+                if($original[$i].Values[$j] -cne $excelRows[$i].Values[$j]) {throw "CSV -> Excel 内容变化：第 $i 行，第 $j 列。"}
+            }
+        }
+        $restored=Convert-ToCsv $converted.Path $false
+        $csvRows=Get-CsvData $restored.Path
+        for($i=0;$i -lt $original.Count;$i++) {
+            for($j=0;$j -lt 11;$j++) {
+                if($original[$i].Values[$j] -cne $csvRows[$i].Values[$j]) {throw "Excel -> CSV 内容变化：第 $i 行，第 $j 列。"}
+            }
+        }
+        $all=Generate-AllExcel $converted.Path
+        $filled=Read-Xlsx $all.Path
+        if(-not $filled[0].Values[1] -or $filled[0].Values[1] -cne $filled[1].Values[1] -or $filled[0].Values[1] -ceq $filled[2].Values[1]) {throw '独立 UUID 分配或同服务多行共用 UUID 失败。'}
+        $excelRows[0].Group='1'
+        $excelRows[2].Group='1'
+        $groupedXlsx=Unique-Target (Join-Path $folder '修改') '组合服务验证' '.xlsx'
+        Write-Xlsx $groupedXlsx $excelRows
+        $groupedCsv=Convert-ToCsv $groupedXlsx $false
+        $grouped=Get-CsvData $groupedCsv.Path
+        if(-not $grouped[0].Values[1] -or $grouped[0].Values[1] -cne $grouped[1].Values[1] -or $grouped[0].Values[1] -cne $grouped[2].Values[1]) { throw '显式组号合并 UUID 失败。' }
+        $checked=Check-File $groupedCsv.Path
+        if($checked.Check.Errors.Count -gt 0) {throw '自检合规检查未通过。'}
+        $watch.Stop()
+        Write-Host ('自检通过：CSV↔Excel 字段一致；文本组地址未改变；单服务多行与跨服务组号 UUID 正确；合规检查通过。') -ForegroundColor Green
+        Write-Host ('自检共耗时：'+$watch.Elapsed.TotalSeconds.ToString('F2')+' 秒。测试文件：'+$folder)
+        exit 0
+    } catch {
+        Write-Host ('自检失败：'+$_.Exception.Message) -ForegroundColor Red
+        Write-Host ('调试文件位置：'+$folder)
+        exit 1
+    }
+}
+
+$form=New-Object System.Windows.Forms.Form
+$form.Text='Thinka Excel 转换工具 v1.4.1 修复版';$form.Size=New-Object System.Drawing.Size(1070,592)
+$form.MinimumSize=New-Object System.Drawing.Size(1070,592)
+$form.StartPosition='CenterScreen';$form.Font=New-Object Drawing.Font('Microsoft YaHei UI',10)
+$form.BackColor=[Drawing.Color]::FromArgb(246,248,252)
+$folderLabel=New-Object Windows.Forms.Label
+$folderLabel.Text='输出目录';$folderLabel.Location=New-Object Drawing.Point(22,22);$folderLabel.AutoSize=$true;$form.Controls.Add($folderLabel)
+$pathText=New-Object Windows.Forms.TextBox
+$pathText.ReadOnly=$true;$pathText.Location=New-Object Drawing.Point(100,18);$pathText.Size=New-Object Drawing.Size(790,28);$pathText.Text=$script:outputBase;$form.Controls.Add($pathText)
+$pick=New-Object Windows.Forms.Button
+$pick.Text='选择文件夹';$pick.Location=New-Object Drawing.Point(907,16);$pick.Size=New-Object Drawing.Size(120,32);$form.Controls.Add($pick)
+$pick.Add_Click({
+    $dialog=New-Object Windows.Forms.FolderBrowserDialog;$dialog.SelectedPath=$script:outputBase
+    if($dialog.ShowDialog() -eq [Windows.Forms.DialogResult]::OK) {
+        $script:outputBase=$dialog.SelectedPath;$pathText.Text=$script:outputBase
+        [void][IO.Directory]::CreateDirectory((Split-Path $script:settingsPath))
+        [IO.File]::WriteAllText($script:settingsPath,$script:outputBase)
+    }
+})
+function Make-Panel([string]$heading,[string]$details,[int]$x,[Drawing.Color]$color) {
+    $p=New-Object Windows.Forms.Panel;$p.Location=New-Object Drawing.Point($x,68);$p.Size=New-Object Drawing.Size(490,210);$p.BackColor=$color;$p.BorderStyle='FixedSingle';$p.AllowDrop=$true
+    $lbl=New-Object Windows.Forms.Label;$lbl.Text=$heading;$lbl.Location=New-Object Drawing.Point(9,27);$lbl.Size=New-Object Drawing.Size(468,38);$lbl.TextAlign='MiddleCenter';$lbl.Font=New-Object Drawing.Font('Microsoft YaHei UI',13,[Drawing.FontStyle]::Bold);$p.Controls.Add($lbl)
+    $desc=New-Object Windows.Forms.Label;$desc.Text=$details;$desc.Location=New-Object Drawing.Point(9,83);$desc.Size=New-Object Drawing.Size(468,97);$desc.TextAlign='MiddleCenter';$p.Controls.Add($desc)
+    return $p
+}
+$left=Make-Panel '① Thinka CSV → 中文 Excel' "将 Thinka 原始 CSV 拖到这里`r`n自动增加最前面的【配件组号】列`r`n输出至：修改 文件夹" 22 ([Drawing.Color]::FromArgb(229,242,255))
+$right=Make-Panel '② 中文 Excel → Thinka CSV' "将编辑完成的 XLSX 拖到这里`r`n按组号生成或补齐 UUID；恢复英文表头`r`n删除辅助列，输出至：thinka 文件夹" 540 ([Drawing.Color]::FromArgb(232,246,238))
+$form.Controls.Add($left);$form.Controls.Add($right)
+$chkAll=New-Object Windows.Forms.CheckBox
+$chkAll.Text='导出 CSV 时，为没有组号且没有 ID 的独立服务也生成 UUID';$chkAll.Location=New-Object Drawing.Point(25,294);$chkAll.Size=New-Object Drawing.Size(745,27);$chkAll.Checked=$false;$form.Controls.Add($chkAll)
+$lblNote=New-Object Windows.Forms.Label
+$lblNote.Text='默认不勾选：没有组号、没有 ID 的设备保持空白，交给 Thinka 生成；有组号的自动合并。'
+$lblNote.Location=New-Object Drawing.Point(28,326);$lblNote.Size=New-Object Drawing.Size(980,24);$lblNote.ForeColor=[Drawing.Color]::FromArgb(85,95,111);$form.Controls.Add($lblNote)
+$genButton=New-Object Windows.Forms.Button
+$genButton.Text='生成全部 UUID Excel...';$genButton.Location=New-Object Drawing.Point(22,365);$genButton.Size=New-Object Drawing.Size(255,42);$form.Controls.Add($genButton)
+$checkButton=New-Object Windows.Forms.Button
+$checkButton.Text='检查 CSV / Excel 合规...';$checkButton.Location=New-Object Drawing.Point(293,365);$checkButton.Size=New-Object Drawing.Size(255,42);$form.Controls.Add($checkButton)
+$log=New-Object Windows.Forms.TextBox
+$log.Multiline=$true;$log.ReadOnly=$true;$log.ScrollBars='Vertical';$log.Location=New-Object Drawing.Point(22,422);$log.Size=New-Object Drawing.Size(1000,117)
+$log.Text='准备就绪。XLSX 直接读写，无需启动 Excel。'
+$form.Controls.Add($log)
+function Write-Log([string]$message) { $log.AppendText("`r`n"+$message); $log.SelectionStart=$log.TextLength; $log.ScrollToCaret(); $form.Refresh() }
+function Write-Result($result) {
+    Write-Log "完成：$($result.Path)"
+    if($result.UpdatedXlsx) { Write-Log "已另外保存含稳定 UUID 的 Excel：$($result.UpdatedXlsx)（下次修改请使用它）" }
+    Write-Log "记录 $($result.Check.Rows) 行、服务 $($result.Check.Services) 个；补齐 ID 单元格 $($result.Check.UpdatedRows) 个；提醒 $($result.Check.Warnings.Count) 项。"
+    if($result.Check.Errors.Count -gt 0) { Write-Log "注意：输入文件已有 $($result.Check.Errors.Count) 项异常，请使用【检查合规】查看。" }
+}
+function Process-Dropped([string[]]$paths,[string]$direction) {
+    foreach($path in $paths) {
+        try {
+            if(-not [IO.File]::Exists($path)){continue}
+            $ext=[IO.Path]::GetExtension($path).ToLowerInvariant()
+            if($direction -eq 'left' -and $ext -ne '.csv') { Write-Log '左侧只接受 CSV。';continue }
+            if($direction -eq 'right' -and $ext -ne '.xlsx') { Write-Log '右侧只接受 XLSX。';continue }
+            Write-Log ("正在处理：" + [IO.Path]::GetFileName($path))
+            $timer=[Diagnostics.Stopwatch]::StartNew()
+            if($direction -eq 'left') {$result=Convert-ToXlsx $path}
+            else {$result=Convert-ToCsv $path ([bool]$chkAll.Checked)}
+            Write-Result $result
+            $timer.Stop();Write-Log ('本次耗时：'+$timer.Elapsed.TotalSeconds.ToString('F2')+' 秒')
+        } catch { Write-Log ("失败："+$_.Exception.Message) }
+    }
+}
+foreach($control in @($left,$right)+@($left.Controls)+@($right.Controls)) {
+    $control.AllowDrop=$true
+    $control.Add_DragEnter({ if($_.Data.GetDataPresent([Windows.Forms.DataFormats]::FileDrop)) {$_.Effect=[Windows.Forms.DragDropEffects]::Copy} else {$_.Effect=[Windows.Forms.DragDropEffects]::None} })
+}
+foreach($control in @($left)+@($left.Controls)) { $control.Add_DragDrop({ Process-Dropped @($_.Data.GetData([Windows.Forms.DataFormats]::FileDrop)) 'left' }) }
+foreach($control in @($right)+@($right.Controls)) { $control.Add_DragDrop({ Process-Dropped @($_.Data.GetData([Windows.Forms.DataFormats]::FileDrop)) 'right' }) }
+$genButton.Add_Click({
+    $dlg=New-Object Windows.Forms.OpenFileDialog
+    $dlg.Title='选择需要补齐 UUID 的中文 Excel 文件';$dlg.Filter='Excel 文件 (*.xlsx)|*.xlsx';$dlg.Multiselect=$false
+    if($dlg.ShowDialog() -ne [Windows.Forms.DialogResult]::OK) {return}
+    try { $timer=[Diagnostics.Stopwatch]::StartNew();Write-Log '正在生成所有缺失 UUID ...'; $result=Generate-AllExcel $dlg.FileName; Write-Result $result; $timer.Stop();Write-Log ('本次耗时：'+$timer.Elapsed.TotalSeconds.ToString('F2')+' 秒') }
+    catch { Write-Log ('生成失败：'+$_.Exception.Message) }
+})
+$checkButton.Add_Click({
+    $dlg=New-Object Windows.Forms.OpenFileDialog
+    $dlg.Title='选择需要检测的 Thinka CSV 或中文 Excel';$dlg.Filter='支持文件 (*.csv;*.xlsx)|*.csv;*.xlsx|CSV 文件 (*.csv)|*.csv|Excel 文件 (*.xlsx)|*.xlsx';$dlg.Multiselect=$false
+    if($dlg.ShowDialog() -ne [Windows.Forms.DialogResult]::OK) {return}
+    try {
+        $timer=[Diagnostics.Stopwatch]::StartNew()
+        Write-Log '正在进行结构、UUID、配件组号、服务名称和组地址检查...'
+        $result=Check-File $dlg.FileName
+        $timer.Stop();Write-Log ("检测耗时："+$timer.Elapsed.TotalSeconds.ToString('F2')+" 秒")
+        Write-Log ("检测完成：错误 $($result.Check.Errors.Count)，提醒 $($result.Check.Warnings.Count)。报告：$($result.Path)")
+        [void][Windows.Forms.MessageBox]::Show("错误：$($result.Check.Errors.Count) 项`r`n提醒：$($result.Check.Warnings.Count) 项`r`n`r`n检查报告已保存：`r`n$($result.Path)",'Thinka 合规检测',[Windows.Forms.MessageBoxButtons]::OK)
+    } catch {Write-Log ('检查失败：'+$_.Exception.Message)}
+})
+[void]$form.ShowDialog()
