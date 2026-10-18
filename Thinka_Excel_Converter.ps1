@@ -871,29 +871,110 @@ $form.Controls.Add($tabs)
 $pageFiles=New-Object Windows.Forms.TabPage('文件操作')
 $pagePreview=New-Object Windows.Forms.TabPage('设备预览与编辑')
 $tabs.TabPages.AddRange([Windows.Forms.TabPage[]]@($pageFiles,$pagePreview))
+$folderCaption=New-Object Windows.Forms.Label
+$folderCaption.Text='输出根目录（可以直接输入路径，也可以选择文件夹）：'
+$folderCaption.Location=New-Object Drawing.Point(20,9)
+$folderCaption.Size=New-Object Drawing.Size(740,22)
+$pageFiles.Controls.Add($folderCaption)
 $folderText=New-Object Windows.Forms.TextBox
-$folderText.ReadOnly=$true
-$folderText.Location=New-Object Drawing.Point(20,20)
-$folderText.Width=880
+$folderText.ReadOnly=$false
+$folderText.Location=New-Object Drawing.Point(20,34)
+$folderText.Size=New-Object Drawing.Size(685,30)
 $folderText.Anchor='Top,Left,Right'
 $folderText.Text=$script:outputBase
 $pageFiles.Controls.Add($folderText)
+$applyFolder=New-Object Windows.Forms.Button
+$applyFolder.Text='应用路径'
+$applyFolder.Location=New-Object Drawing.Point(719,32)
+$applyFolder.Size=New-Object Drawing.Size(112,32)
+$applyFolder.Anchor='Top,Right'
+$pageFiles.Controls.Add($applyFolder)
 $browse=New-Object Windows.Forms.Button
-$browse.Text='选择输出文件夹'
-$browse.Location=New-Object Drawing.Point(915,19)
-$browse.Size=New-Object Drawing.Size(170,30)
+$browse.Text='选择文件夹'
+$browse.Location=New-Object Drawing.Point(841,32)
+$browse.Size=New-Object Drawing.Size(112,32)
 $browse.Anchor='Top,Right'
 $pageFiles.Controls.Add($browse)
-$browse.Add_Click({
-    $d=New-Object Windows.Forms.FolderBrowserDialog
-    $d.SelectedPath=$script:outputBase
-    if($d.ShowDialog() -eq [Windows.Forms.DialogResult]::OK) {
-        $script:outputBase=$d.SelectedPath
-        $folderText.Text=$script:outputBase
-        [void][IO.Directory]::CreateDirectory((Split-Path $script:settingsPath))
-        [IO.File]::WriteAllText($script:settingsPath,$script:outputBase)
+$resetFolder=New-Object Windows.Forms.Button
+$resetFolder.Text='恢复默认'
+$resetFolder.Location=New-Object Drawing.Point(963,32)
+$resetFolder.Size=New-Object Drawing.Size(112,32)
+$resetFolder.Anchor='Top,Right'
+$pageFiles.Controls.Add($resetFolder)
+$folderHint=New-Object Windows.Forms.Label
+$folderHint.Location=New-Object Drawing.Point(20,71)
+$folderHint.Size=New-Object Drawing.Size(1060,19)
+$folderHint.Anchor='Top,Left,Right'
+$folderHint.ForeColor=[Drawing.Color]::FromArgb(70,85,102)
+$pageFiles.Controls.Add($folderHint)
+function Set-OutputFolder([string]$requested,[bool]$persist=$true) {
+    # One writable root, with Excel and Thinka CSV in separate subfolders.
+    # Never substitute the user's Desktop if they explicitly chose another path.
+    $value=[string]$requested
+    $value=$value.Trim().Trim('"').Trim()
+    $value=[Environment]::ExpandEnvironmentVariables($value)
+    if(-not $value -or -not [IO.Path]::IsPathRooted($value)) {
+        throw '请输入完整的输出文件夹绝对路径，或点击“选择文件夹”。'
+    }
+    try {
+        $resolved=[IO.Path]::GetFullPath($value)
+        if([IO.File]::Exists($resolved)) {throw '选择的路径是文件，不是文件夹。'}
+        [void][IO.Directory]::CreateDirectory($resolved)
+        if(-not [IO.Directory]::Exists($resolved)) {throw '输出文件夹无法创建。'}
+        # Both real export functions already use $script:outputBase.
+        # Verify children can be created now rather than failing after editing.
+        [void][IO.Directory]::CreateDirectory((Join-Path $resolved 'Excel配置文件'))
+        [void][IO.Directory]::CreateDirectory((Join-Path $resolved 'Thinka导入文件'))
+        if($persist -and -not ($SelfTest -or $GuiSmokeTest)) {
+            $parent=Split-Path -Parent $script:settingsPath
+            [void][IO.Directory]::CreateDirectory($parent)
+            [IO.File]::WriteAllText($script:settingsPath,$resolved,[Text.UTF8Encoding]::new($false))
+        }
+        $script:outputBase=$resolved
+        $folderText.Text=$resolved
+        $folderHint.Text='实际位置：'+(Join-Path $resolved 'Excel配置文件')+'    |    '+(Join-Path $resolved 'Thinka导入文件')
+        return $resolved
+    } catch {
+        throw ('输出目录无效或不可写：'+$_.Exception.Message)
+    }
+}
+function Sync-OutputFolder {
+    $candidate=$folderText.Text.Trim().Trim('"').Trim()
+    if($candidate -cne $script:outputBase) {
+        [void](Set-OutputFolder $candidate $true)
+    }
+}
+function Report-FolderError($errorRecord) {
+    [void][Windows.Forms.MessageBox]::Show($errorRecord.Exception.Message,'输出文件夹设置失败')
+    $folderText.Focus()
+}
+$applyFolder.Add_Click({
+    try {[void](Set-OutputFolder $folderText.Text $true)}
+    catch {Report-FolderError $_}
+})
+$folderText.Add_KeyDown({
+    if($_.KeyCode -eq [Windows.Forms.Keys]::Enter) {
+        $_.SuppressKeyPress=$true
+        try {[void](Set-OutputFolder $folderText.Text $true)}
+        catch {Report-FolderError $_}
     }
 })
+$browse.Add_Click({
+    $dialog=New-Object Windows.Forms.FolderBrowserDialog
+    $dialog.Description='选择 Thinka 文件的输出根目录'
+    $dialog.SelectedPath=if([IO.Directory]::Exists($folderText.Text.Trim())){$folderText.Text.Trim()}else{$script:outputBase}
+    try {
+        if($dialog.ShowDialog($form) -eq [Windows.Forms.DialogResult]::OK) {
+            try {[void](Set-OutputFolder $dialog.SelectedPath $true)}
+            catch {Report-FolderError $_}
+        }
+    } finally {$dialog.Dispose()}
+})
+$resetFolder.Add_Click({
+    try {[void](Set-OutputFolder $defaultFolder $true)}
+    catch {Report-FolderError $_}
+})
+[void](Set-OutputFolder $script:outputBase $false)
 function File-Button([string]$title,[int]$x,[int]$y) {
     $b=New-Object Windows.Forms.Button
     $b.Text=$title
@@ -902,8 +983,8 @@ function File-Button([string]$title,[int]$x,[int]$y) {
     $pageFiles.Controls.Add($b)
     return $b
 }
-$loadCsv=File-Button '① 导入 Thinka CSV' 22 90
-$loadXlsx=File-Button '② 导入编辑好的 Excel' 300 90
+$loadCsv=File-Button '① 导入 Thinka CSV（点击 / 拖入）' 22 90
+$loadXlsx=File-Button '② 导入 Excel（点击 / 拖入）' 300 90
 $saveXlsx=File-Button '③ 导出 Excel 配置文件' 22 161
 $saveCsv=File-Button '④ 导出 Thinka CSV' 300 161
 $reportBtn=File-Button '全面检测' 580 90
@@ -1280,6 +1361,7 @@ function Choose-Input([string]$kind) {
 function Do-Export([string]$kind) {
     if(-not $script:projectPath) {[void][Windows.Forms.MessageBox]::Show('请先导入文件。');return}
     try {
+        Sync-OutputFolder
         $checked=Show-Issues
         if($checked.Errors.Count -gt 0) {
             [void][Windows.Forms.MessageBox]::Show("有 $($checked.Errors.Count) 项错误，先修复再导出。")
@@ -1381,6 +1463,7 @@ $saveCsv.Add_Click({Do-Export 'csv'})
 $previewBtn.Add_Click({$tabs.SelectedTab=$pagePreview})
 $reportBtn.Add_Click({
     if(-not $script:projectPath) {return}
+    try {Sync-OutputFolder} catch {Report-FolderError $_;return}
     $c=Show-Issues
     $folder=Join-Path $script:outputBase '检查报告'
     [void][IO.Directory]::CreateDirectory($folder)
@@ -1475,18 +1558,63 @@ $separateBtn.Add_Click({
     }
     Rebuild-Tree $picked.Line
 })
-foreach($element in @($pageFiles,$pagePreview)) {
-    $element.AllowDrop=$true
-    $element.Add_DragEnter({
-        if($_.Data.GetDataPresent([Windows.Forms.DataFormats]::FileDrop)) {$_.Effect='Copy'}
-    })
-    $element.Add_DragDrop({
-        $paths=@($_.Data.GetData([Windows.Forms.DataFormats]::FileDrop))
-        if($paths.Count -gt 0) {
-            try {Load-File $paths[0]}
-            catch {[void][Windows.Forms.MessageBox]::Show($_.Exception.Message,'拖入文件失败')}
-        }
-    })
+# Import buttons support both clicking and dropping a file directly onto them.
+# File-type checks happen before replacing the current single-project work copy.
+function Get-DroppedPath($data,[string]$expected='') {
+    if($null -eq $data) {return ''}
+    if(-not $data.GetDataPresent([Windows.Forms.DataFormats]::FileDrop)) {return ''}
+    $items=@($data.GetData([Windows.Forms.DataFormats]::FileDrop))
+    if($items.Count -ne 1) {return ''}
+    $path=[string]$items[0]
+    if(-not [IO.File]::Exists($path)) {return ''}
+    $ext=[IO.Path]::GetExtension($path).ToLowerInvariant()
+    if($ext -notin @('.csv','.xlsx')) {return ''}
+    if($expected -and $ext -cne $expected) {return ''}
+    return $path
+}
+function Import-DroppedFile($data,[string]$expected='') {
+    $path=Get-DroppedPath $data $expected
+    if(-not $path) {
+        $kind=if($expected -eq '.csv'){'CSV'}elseif($expected -eq '.xlsx'){'XLSX'}else{'CSV 或 XLSX'}
+        [void][Windows.Forms.MessageBox]::Show("请只拖入一个 $kind 文件。CSV 拖到 CSV 按钮，Excel 拖到 Excel 按钮。",'文件类型不符')
+        return $false
+    }
+    try {Load-File $path;return $true}
+    catch {
+        [void][Windows.Forms.MessageBox]::Show($_.Exception.Message,'拖入文件失败')
+        return $false
+    }
+}
+function Add-FileDrop($control,[string]$expected) {
+    $control.AllowDrop=$true
+    if($expected -eq '.csv') {
+        $control.Add_DragEnter({
+            $_.Effect=if(Get-DroppedPath $_.Data '.csv') {
+                [Windows.Forms.DragDropEffects]::Copy
+            }else{[Windows.Forms.DragDropEffects]::None}
+        })
+        $control.Add_DragDrop({[void](Import-DroppedFile $_.Data '.csv')})
+    } elseif($expected -eq '.xlsx') {
+        $control.Add_DragEnter({
+            $_.Effect=if(Get-DroppedPath $_.Data '.xlsx') {
+                [Windows.Forms.DragDropEffects]::Copy
+            }else{[Windows.Forms.DragDropEffects]::None}
+        })
+        $control.Add_DragDrop({[void](Import-DroppedFile $_.Data '.xlsx')})
+    } else {
+        $control.Add_DragEnter({
+            $_.Effect=if(Get-DroppedPath $_.Data) {
+                [Windows.Forms.DragDropEffects]::Copy
+            }else{[Windows.Forms.DragDropEffects]::None}
+        })
+        $control.Add_DragDrop({[void](Import-DroppedFile $_.Data)})
+    }
+}
+Add-FileDrop $loadCsv '.csv'
+Add-FileDrop $loadXlsx '.xlsx'
+# Also allow dropping either file onto the page's empty area and preview pane.
+foreach($dropArea in @($pageFiles,$pagePreview,$tabs,$form,$log,$status,$split,$tree,$grid)) {
+    Add-FileDrop $dropArea ''
 }
 $form.Add_FormClosing({
     if(Has-Unsaved) {
