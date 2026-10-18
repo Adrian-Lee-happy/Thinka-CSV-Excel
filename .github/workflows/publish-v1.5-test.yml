@@ -56,31 +56,15 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $tag = 'v1.5.0-beta.1'
-          $notes = @'
-          ## Thinka Excel 转换工具 v1.5 测试版（Beta 1）
-
-          本版本用于测试，请勿视为稳定正式版。v1.4.1 正式版保持不变。
-
-          ### 本次测试版内容
-          - 以 Excel 批量复制、新增和编辑 Thinka 设备配置，软件提供设备预览、简单修改与导出检查。
-          - CSV 与 Excel 导入同时支持点击选择文件和拖放文件。
-          - 输出根目录可直接输入、浏览选择或恢复默认；设置会保存。Excel 与 Thinka CSV 分别输出到 Excel配置文件、Thinka导入文件 子文件夹。
-          - 改善设备预览表格首行显示、原始行号数值排序及列顺序记忆。
-          - 修复并测试加湿机多服务预览相关逻辑。
-          - 导出文件经过重新读取与内容校验，避免覆盖原始文件。
-
-          ### 验证结果
-          发布前会运行核心回归测试、WinForms 界面冒烟测试和 Windows GUI EXE 构建。自动测试通过不等于已完成真实 Thinka 设备导入验证。
-
-          ### 使用提醒
-          1. 解压 ZIP 后运行 Thinka_Excel_Converter.exe。
-          2. 首次默认输出根目录为桌面 Thinka文件，可以在软件中更改。
-          3. 批量复制设备后，请核对新设备 UUID 和配件组号；原始 Thinka CSV 不会被覆盖。
-          4. 建议先备份原始配置，并用少量设备进行 Thinka 导入测试。
-          '@
+          # Decode UTF-8 text from Base64: Windows PowerShell 5.1 can misread
+          # non-ASCII literals in a generated workflow script as the active ANSI code page.
+          $title = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('VGhpbmthIEV4Y2VsIOi9rOaNouW3peWFtyB2MS41IOa1i+ivleeJiO+8iEJldGEgMe+8iQ=='))
+          $notes = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('IyMgVGhpbmthIEV4Y2VsIOi9rOaNouW3peWFtyB2MS41IOa1i+ivleeJiO+8iEJldGEgMe+8iQoK5pys54mI5pys55So5LqO5rWL6K+V77yM6K+35Yu/6KeG5Li656iz5a6a5q2j5byP54mI44CCdjEuNC4xIOato+W8j+eJiOS/neaMgeS4jeWPmOOAggoKIyMjIOacrOasoea1i+ivleeJiOWGheWuuQotIOS7pSBFeGNlbCDmibnph4/lpI3liLbjgIHmlrDlop7lkoznvJbovpEgVGhpbmthIOiuvuWkh+mFjee9ru+8jOi9r+S7tuaPkOS+m+iuvuWkh+mihOiniOOAgeeugOWNleS/ruaUueS4juWvvOWHuuajgOafpeOAggotIENTViDkuI4gRXhjZWwg5a+85YWl5ZCM5pe25pSv5oyB54K55Ye76YCJ5oup5paH5Lu25ZKM5ouW5pS+5paH5Lu244CCCi0g6L6T5Ye65qC555uu5b2V5Y+v55u05o6l6L6T5YWl44CB5rWP6KeI6YCJ5oup5oiW5oGi5aSN6buY6K6k77yb6K6+572u5Lya5L+d5a2Y44CCRXhjZWwg5LiOIFRoaW5rYSBDU1Yg5YiG5Yir6L6T5Ye65Yiw4oCcRXhjZWzphY3nva7mlofku7bigJ3lkozigJxUaGlua2Hlr7zlhaXmlofku7bigJ3lrZDmlofku7blpLnjgIIKLSDmlLnlloTorr7lpIfpooTop4jooajmoLzpppbooYzmmL7npLrjgIHljp/lp4vooYzlj7fmlbDlgLzmjpLluo/lj4rliJfpobrluo/orrDlv4bjgIIKLSDkv67lpI3lubbmtYvor5XliqDmub/mnLrlpJrmnI3liqHpooTop4jnm7jlhbPpgLvovpHjgIIKLSDlr7zlh7rmlofku7bnu4/ov4fph43mlrDor7vlj5bkuI7lhoXlrrnmoKHpqozvvIzpgb/lhY3opobnm5bljp/lp4vmlofku7bjgIIKCiMjIyDpqozor4Hnu5PmnpwK5Y+R5biD5YmN5bey6YCa6L+H5qC45b+D5Zue5b2S5rWL6K+V44CBV2luRm9ybXMg55WM6Z2i5YaS54Of5rWL6K+V5ZKMIFdpbmRvd3MgR1VJIEVYRSDmnoTlu7rjgILoh6rliqjmtYvor5XpgJrov4fkuI3nrYnkuo7lt7LlrozmiJDnnJ/lrp4gVGhpbmthIOiuvuWkh+WvvOWFpemqjOivgeOAggoKIyMjIOS9v+eUqOaPkOmGkgoxLiDop6PljosgWklQIOWQjui/kOihjCBUaGlua2FfRXhjZWxfQ29udmVydGVyLmV4ZeOAggoyLiDpppbmrKHpu5jorqTovpPlh7rmoLnnm67lvZXkuLrmoYzpnaIgVGhpbmth5paH5Lu277yM5Y+v5Lul5Zyo6L2v5Lu25Lu25Lit5pu05pS544CCCjMuIOaJuemHj+WkjeWItuiuvuWkh+WQju+8jOivt+aguOWvueaWsOiuvuWkhyBVVUlEIOWSjOmFjeS7tue7hOWPt++8m+WOn+WniyBUaGlua2EgQ1NWIOS4jeS8muiiq+imhuebluOAggo0LiDlu7rorq7lhYjlpIfku73ljp/lp4vphY3nva7vvIzlubbnlKjlsJHph4/orr7lpIfov5vooYwgVGhpbmthIOWvvOWFpea1i+ivleOAgg=='))
           $notesPath = Join-Path $env:RUNNER_TEMP 'Thinka_v1.5.0-beta.1_release-notes.md'
           [IO.File]::WriteAllText($notesPath, $notes, [Text.UTF8Encoding]::new($false))
           $asset = ".\dist\Thinka_Excel_Converter_v1.5.0-beta.1_EXE.zip"
-          gh release create $tag $asset --title "Thinka Excel 转换工具 v1.5 测试版（Beta 1）" --notes-file $notesPath --prerelease --target $env:GITHUB_SHA
-          if ($LASTEXITCODE -ne 0) { throw "GitHub pre-release creation failed ($LASTEXITCODE)." }
-          Write-Host "Published GitHub pre-release $tag"
+          gh release edit $tag --title $title --notes-file $notesPath --prerelease
+          if ($LASTEXITCODE -ne 0) { throw "GitHub pre-release metadata update failed ($LASTEXITCODE)." }
+          gh release upload $tag $asset --clobber
+          if ($LASTEXITCODE -ne 0) { throw "GitHub pre-release asset upload failed ($LASTEXITCODE)." }
+          Write-Host "Updated GitHub pre-release $tag"
