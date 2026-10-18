@@ -1628,6 +1628,54 @@ if($GuiSmokeTest) {
         if($tree.Nodes.Count -ne 1) {throw '预览设备树房间数量异常。'}
         if($tree.Nodes[0].Nodes.Count -ne 2) {throw '预览设备树服务数量异常。'}
         if($grid.Rows.Count -lt 1) {throw '右侧设备详情没有加载。'}
+        # Verify that both import buttons are real file-drop targets.
+        if(-not $loadCsv.AllowDrop -or -not $loadXlsx.AllowDrop) {
+            throw '导入 CSV / Excel 按钮没有启用拖放。'
+        }
+        if($folderText.ReadOnly -or -not $applyFolder.Enabled -or
+           -not $browse.Enabled -or -not $resetFolder.Enabled) {
+            throw '输出路径无法通过输入、浏览或恢复默认进行修改。'
+        }
+        $csvData=New-Object Windows.Forms.DataObject
+        $csvData.SetData([Windows.Forms.DataFormats]::FileDrop,([string[]]@($sample)))
+        if((Get-DroppedPath $csvData '.csv') -cne $sample) {
+            throw '拖到 CSV 导入按钮的文件没有被接受。'
+        }
+        if((Get-DroppedPath $csvData '.xlsx')) {
+            throw 'Excel 按钮错误地接受 CSV。'
+        }
+        $originalOutputRoot=$script:outputBase
+        $tempOutputRoot=Join-Path ([IO.Path]::GetTempPath()) ('Thinka_OutputTest_'+[guid]::NewGuid().ToString('N'))
+        try {
+            [void](Set-OutputFolder $tempOutputRoot $false)
+            if($script:outputBase -cne $tempOutputRoot -or $folderText.Text -cne $tempOutputRoot) {
+                throw '自定义输出路径没有应用到 UI 和程序内部。'
+            }
+            $sampleRecords=Get-CsvData $sample
+            $exportedExcel=Export-SafeExcel $sample '' $sampleRecords
+            $exportedCsv=Export-SafeCsv $sample $sampleRecords $false
+            if(-not $exportedExcel.Path.StartsWith((Join-Path $tempOutputRoot 'Excel配置文件')+[IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)) {
+                throw 'Excel 实际导出位置仍固定在旧目录。'
+            }
+            if(-not $exportedCsv.Path.StartsWith((Join-Path $tempOutputRoot 'Thinka导入文件')+[IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)) {
+                throw 'CSV 实际导出位置仍固定在旧目录。'
+            }
+            $xlsxData=New-Object Windows.Forms.DataObject
+            $xlsxData.SetData([Windows.Forms.DataFormats]::FileDrop,([string[]]@($exportedExcel.Path)))
+            if((Get-DroppedPath $xlsxData '.xlsx') -cne $exportedExcel.Path) {
+                throw '拖到 Excel 导入按钮的 XLSX 没有被接受。'
+            }
+            if((Get-DroppedPath $xlsxData '.csv')) {
+                throw 'CSV 按钮错误地接受 XLSX。'
+            }
+        } finally {
+            [void](Set-OutputFolder $originalOutputRoot $false)
+            if([IO.Directory]::Exists($tempOutputRoot)) {
+                [IO.Directory]::Delete($tempOutputRoot,$true)
+            }
+        }
+        Write-Host '文件导入拖放与输出目录自检通过：双按钮支持匹配文件，自定义目录实测 CSV/XLSX 输出。'
+
         $form.Show()
         $form.Activate()
         [Windows.Forms.Application]::DoEvents()
