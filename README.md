@@ -1,65 +1,55 @@
-# Thinka CSV Excel Converter
+# Thinka CSV Excel Converter — v1.5 开发测试版
 
-一个面向 **Thinka / KNX** 配置工作的 Windows CSV 与 Excel 双向转换工具。
+一款用于 KNX 工程现场的 **Thinka 配置批量添加工具**。核心流程是 **Thinka CSV → Excel 批量复制/新增和编辑设备 → 软件预览与简单修改 → 导出 Thinka CSV**。
 
-当前版本：**v1.4.1（PowerShell 修复版）**。本项目是独立开发的辅助工具，不代表 Thinka 官方，也不保证所有 Thinka 固件版本都支持相同的导入规则。
+> 本分支是开发版，尚未通过真实 Thinka 设备完整测试。**v1.4.1 正式版仍保留在 main 和 v1.4.1 Release，不受影响。**
 
-## 主要功能
+## 如何使用
 
-- **CSV → Excel**：将 Thinka 导出的 UTF-8 CSV 转成可编辑的 `.xlsx`，标题自动改成中文。
-- **Excel → CSV**：恢复 Thinka 原始的 11 列英文标题，移除编辑用的「配件组号」列，导出 UTF-8 无 BOM 的 CSV。
-- **保护 KNX 组地址**：以文本方式保存 `6/0/1` 等组地址，避免 Excel 错误地将其转换成日期。
-- **可选配件分组**：同一房间填写相同的「配件组号」，多个服务可以共用一个 UUID。未分组且缺少 UUID 的服务默认留空，由 Thinka 分配。
-- **生成全部 UUID Excel**：另存一份补齐缺失 UUID 的 Excel 供后续调整；已有 UUID 不随意覆盖。
-- **合规检查**：检查表头、11 列结构、配件 ID、组号冲突、服务名称及部分 KNX 组地址问题，并输出中文报告。
-- **本地运行**：使用 PowerShell 5.1 与 Open XML 处理 XLSX，不依赖 Excel COM，也无需联网。
+1. Windows 10 / 11 使用 `启动工具.cmd` 或从本分支的 [Actions 构建](https://github.com/Adrian-Lee-happy/Thinka-CSV-Excel/actions/workflows/build-exe.yml) 下载测试 EXE。
+2. 在「文件操作」页，既可以**点击导入按钮选文件，也可以把 CSV 拖进 CSV 按钮、把 XLSX 拖进 Excel 按钮**；拖到页面空白区域时两种格式都能识别。导入 Thinka CSV 后点击「导出 Excel」。
+3. 在 Excel 中批量复制、新增和编辑 Thinka 配置行；修改 **设备名称、房间、组地址**，并**手动清空新增设备从旧设备复制来的 UUID**。
+4. 复制组合配件时，也务必为新配件填写**与原配件不同的「配件组号」**，否则多个服务可能被视为同一个配件。服务的多行 characteristic/parameter 必须保持名称一致。
+5. 保存 Excel，然后重新「导入 Excel 配置」，在「设备预览与编辑」页核对房间树、服务与地址；可以直接编辑少量字段、组合或解除组合服务。
+6. 点击「导出 Thinka CSV」，确认检测结果，软件会生成临时 CSV，**重新回读字段一致才发布正式文件**。导出后保留新生成的 UUID 在当前工作副本中。
+7. 如果需要保留自动生成的 UUID，可再点击「导出 Excel」。不会自行创建多余的 Excel 副本。
 
-## 快速开始
+## 现有功能
 
-1. 使用 Windows 10/11，下载仓库源码并解压。
-2. 双击 **`运行自检.cmd`**，检查当前 Windows 环境中的转换、UUID 分组和合规检查功能。
-3. 双击 **`启动工具.cmd`** 启动图形界面。
-4. 将 Thinka 原始 CSV 拖入左侧，生成中文 XLSX；在 Excel 中修改完成后，拖入右侧转回 Thinka CSV。
-5. 如需组合配件（例如一个空调配合风速服务），在相同房间内给对应服务填写相同的「配件组号」。
+- CSV 固定 **11 列原始英文表头**，UTF-8 无 BOM 输出；组地址以文本存储，防止 Excel 自动变成日期。
+- Excel 使用中文表头，列顺序可变、可增加自定义列；导回软件按表头识别。Excel 生成时包含「配件组号」及隐藏的「原始行序」字段。
+- Excel 新增或删除记录后，以当前行内容导出。原始记录尽量按原顺序输出，新增记录排在末尾；不要破坏隐藏顺序字段。
+- 导入 Excel 后再次导出，尽量保留原有列宽、颜色、边框和辅助信息。
+- 按房间和逻辑配件预览，右侧可修改房间、服务名称和读/写组地址；高级模式可修改 UUID。
+- 支持服务组合/解除组合、简单搜索、已修改标记、撤销/重做、恢复选中设备、全文检测。
+- 导出前检查 UUID 格式、冲突、服务/特征名和 KNX 地址；对复制组合配件时可能混入已有配件组的情况给出提醒。
+- 导出采用「项目名称_日期时间」命名。**桌面 `Thinka文件` 仅为首次默认输出根目录，不固定**：可在顶部直接输入路径并「应用路径」，也可「选择文件夹」或「恢复默认」。之后 Excel 与 CSV 分别存入所选根目录的 `Excel配置文件` / `Thinka导入文件` 子目录，路径设置会记住且不覆盖旧文件。
+- 本地 PowerShell 5.1 + WinForms + Open XML，无需安装 Excel 或 Python。
 
-默认输出路径为 **当前 Windows 用户桌面下的 `Thinka文件` 文件夹**；可以在程序中另选路径。
+## UUID 注意事项
 
-> **重要**：项目配置涉及实际 KNX 组地址、设备名称与配件 ID。导入 Thinka 前请先备份原始 CSV，并用少量设备测试。文件合规检查只是已知规则的静态检测，不能替代 Thinka 实际导入验证。
-
-## 关于 UUID
-
-| 情况 | 默认处理 |
+| 操作 | 规则 |
 | --- | --- |
-| 已有 UUID | 保留原 ID |
-| 无配件组号且 UUID 为空 | 保持空白，交由 Thinka 分配 |
-| 同房间、相同配件组号且 UUID 为空 | 为该组分配一个 UUID |
-| 同组出现互相冲突的已有 UUID | 报错，不擅自覆盖 |
+| 原有 UUID | 必须保留，不随意覆盖 |
+| Excel 复制已有设备 | **请人工清空复制行的 UUID** |
+| 同一个新组合配件 | 多个服务使用相同且唯一的 Excel「配件组号」；CSV 导出时共享新 UUID |
+| 独立新设备 UUID 为空 | 默认保留空白，交由 Thinka 分配；可勾选由软件生成 UUID |
+| 同组已有不同 UUID | 阻止导出并要求人工确认 |
+| 只想解除组合 | 在预览中选择服务解除，拆出的服务 UUID 会清空 |
 
-需要人工编辑每个配件 ID 时，可使用 **「生成全部 UUID Excel」** 创建独立副本。
+注意：**Thinka 是控制界面，而不是 KNX 线路设计软件**。本项目不会根据组地址重复就擅自合并设备或推断控制逻辑。
 
-## 文件说明
+## 开发和验证
 
-- `Thinka_Excel_Converter.ps1`：PowerShell 图形界面与 CSV/XLSX 转换源码。
-- `启动工具.cmd`：启动程序。
-- `运行自检.cmd`：运行本地自检。
-- `使用说明.txt`：详细中文操作说明。
-- `更新记录.txt`：版本更新历史。
+- 运行核心自检：`powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\Thinka_Excel_Converter.ps1 -SelfTest`。
+- 运行窗口控件冒烟测试：`powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\Thinka_Excel_Converter.ps1 -GuiSmokeTest`。
+- Windows EXE 打包：`powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build\Build-Exe.ps1 -InstallPs2Exe`。
+- GitHub Actions 自动运行核心测试、GUI 冒烟测试和 EXE 构建。**这些检查无法替代真实 Thinka 导入验证和现场鼠标操作测试。**
 
-## 兼容性与状态
+测试数据仅使用仓库中的合成样本；请勿公开提交客户真实工程的 CSV、XLSX、UUID 或地址清单。
 
-- 目标平台：Windows 10/11、Windows PowerShell 5.1。
-- XLSX 文件直接使用 Open XML ZIP/XML 结构读写；编辑 XLSX 时可以使用 Microsoft Excel。
-- v1.4.1 修复了 PowerShell 读取 XML 时 `SelectSingleNode` 参数匹配错误。
-- **尚未完成 Windows 环境和 Thinka 设备上的全面验证**。遇到问题请提供错误日志与脱敏样本，不要公开上传真实客户配置。
+## v1.5 当前限制
 
-## 隐私和数据安全
+软件主要用于 **Excel 批量添加 + UI 简单修改**。尚不支持在编辑界面批量创造设备、直接导入 ETS 工程、自动推断 KNX 控制逻辑、外部 Excel 实时监控或跨项目合并。新增行的 UUID 和配件组号由用户在 Excel 中正确整理，软件尽力校验但不能替用户判断设计意图。
 
-工具在本机处理文件，不需要上传到云服务。本仓库不存放客户 CSV、XLSX、KNX 工程和设备配置文件。
-
-## Windows EXE 版本（PS2EXE）
-
-- 进入仓库的 [Actions → Build Windows GUI EXE](https://github.com/Adrian-Lee-happy/Thinka-CSV-Excel/actions/workflows/build-exe.yml)，打开最新成功的构建，下载 **Thinka_Excel_Converter_v1.4.1_EXE** 附件。
-- 解压 ZIP 后双击 `Thinka_Excel_Converter.exe`，不再弹出 PowerShell 控制台。
-- 该 EXE 是 PS2EXE 对 PowerShell 脚本的封装，仍依赖 Windows 自带的 PowerShell 组件；无需安装 Python 或 Microsoft Excel。
-- 构建脚本在 `build/Build-Exe.ps1`，使用 PS2EXE 1.0.18。也可在 Windows PowerShell 5.1 下运行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build\Build-Exe.ps1 -InstallPs2Exe` 自行构建。
-- 已通过 Windows CI 源码自检与生成文件的 GUI 子系统检查；最终的鼠标拖放、操作界面及 Thinka 导入仍需在本地现场验证。
+项目为独立辅助工具，不代表 Thinka 官方；正式导入前请先备份原始 Thinka 配置，在少量设备上试验。

@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+  pull_request:
     paths:
       - 'Thinka_Excel_Converter.ps1'
       - 'build/Build-Exe.ps1'
@@ -27,6 +28,12 @@ jobs:
           powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File ".\Thinka_Excel_Converter.ps1" -SelfTest
           if ($LASTEXITCODE -ne 0) { throw "Source regression self-test failed ($LASTEXITCODE)." }
 
+      - name: Smoke test WinForms preview (STA)
+        shell: powershell
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File ".\Thinka_Excel_Converter.ps1" -GuiSmokeTest
+          if ($LASTEXITCODE -ne 0) { throw "WinForms GUI smoke test failed ($LASTEXITCODE)." }
+
       - name: Build GUI EXE (no console)
         shell: powershell
         run: |
@@ -37,19 +44,19 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $stage = Join-Path $env:RUNNER_TEMP 'Thinka_Excel_Converter_v1.4.1'
+          $stage = Join-Path $env:RUNNER_TEMP 'Thinka_Excel_Converter_v1.5-dev'
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           Copy-Item -LiteralPath ".\dist\Thinka_Excel_Converter.exe" -Destination $stage -ErrorAction Stop
           Copy-Item -LiteralPath ".\README.md" -Destination $stage -ErrorAction Stop
           # Use wildcard to avoid non-ASCII literals in Windows PowerShell inline scripts.
           Get-ChildItem -Path "." -Filter "*.txt" -File | Copy-Item -Destination $stage -ErrorAction Stop
-          Compress-Archive -Path (Join-Path $stage '*') -DestinationPath ".\dist\Thinka_Excel_Converter_v1.4.1_EXE.zip" -Force
-          if (-not (Test-Path ".\dist\Thinka_Excel_Converter_v1.4.1_EXE.zip")) { throw 'ZIP archive not created.' }
+          Compress-Archive -Path (Join-Path $stage '*') -DestinationPath ".\dist\Thinka_Excel_Converter_v1.5-dev_EXE.zip" -Force
+          if (-not (Test-Path ".\dist\Thinka_Excel_Converter_v1.5-dev_EXE.zip")) { throw 'ZIP archive not created.' }
 
       - name: Upload EXE ZIP artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Thinka_Excel_Converter_v1.4.1_EXE
-          path: dist/Thinka_Excel_Converter_v1.4.1_EXE.zip
+          name: Thinka_Excel_Converter_v1.5-dev_EXE
+          path: dist/Thinka_Excel_Converter_v1.5-dev_EXE.zip
           if-no-files-found: error
           retention-days: 30
