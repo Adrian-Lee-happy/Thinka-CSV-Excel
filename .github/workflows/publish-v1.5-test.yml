@@ -1,0 +1,86 @@
+name: Publish Thinka v1.5 Test Release
+
+on:
+  push:
+    branches:
+      - publish/v1.5.0-beta.1
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Test, build and publish v1.5.0-beta.1
+    runs-on: windows-latest
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@v4
+
+      - name: Run source regression tests
+        shell: powershell
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File ".\Thinka_Excel_Converter.ps1" -SelfTest
+          if ($LASTEXITCODE -ne 0) { throw "Source regression self-test failed ($LASTEXITCODE)." }
+
+      - name: Smoke test WinForms preview (STA)
+        shell: powershell
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File ".\Thinka_Excel_Converter.ps1" -GuiSmokeTest
+          if ($LASTEXITCODE -ne 0) { throw "WinForms GUI smoke test failed ($LASTEXITCODE)." }
+
+      - name: Build Windows GUI EXE
+        shell: powershell
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\build\Build-Exe.ps1" -InstallPs2Exe
+          if ($LASTEXITCODE -ne 0) { throw "PS2EXE build failed ($LASTEXITCODE)." }
+          if (-not (Test-Path ".\dist\Thinka_Excel_Converter.exe")) { throw "Built EXE was not found." }
+
+      - name: Package release files
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $stage = Join-Path $env:RUNNER_TEMP 'Thinka_Excel_Converter_v1.5.0-beta.1'
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item -LiteralPath ".\dist\Thinka_Excel_Converter.exe" -Destination $stage -ErrorAction Stop
+          Copy-Item -LiteralPath ".\README.md" -Destination $stage -ErrorAction Stop
+          Get-ChildItem -Path "." -Filter "*.txt" -File | Copy-Item -Destination $stage -ErrorAction Stop
+          $zip = ".\dist\Thinka_Excel_Converter_v1.5.0-beta.1_EXE.zip"
+          Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -Force
+          if (-not (Test-Path $zip)) { throw "Release ZIP was not created." }
+          Write-Host ("Release package ready: {0} bytes" -f (Get-Item $zip).Length)
+
+      - name: Publish GitHub pre-release
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = 'v1.5.0-beta.1'
+          $notes = @'
+          ## Thinka Excel 转换工具 v1.5 测试版（Beta 1）
+
+          本版本用于测试，请勿视为稳定正式版。v1.4.1 正式版保持不变。
+
+          ### 本次测试版内容
+          - 以 Excel 批量复制、新增和编辑 Thinka 设备配置，软件提供设备预览、简单修改与导出检查。
+          - CSV 与 Excel 导入同时支持点击选择文件和拖放文件。
+          - 输出根目录可直接输入、浏览选择或恢复默认；设置会保存。Excel 与 Thinka CSV 分别输出到 Excel配置文件、Thinka导入文件 子文件夹。
+          - 改善设备预览表格首行显示、原始行号数值排序及列顺序记忆。
+          - 修复并测试加湿机多服务预览相关逻辑。
+          - 导出文件经过重新读取与内容校验，避免覆盖原始文件。
+
+          ### 验证结果
+          发布前会运行核心回归测试、WinForms 界面冒烟测试和 Windows GUI EXE 构建。自动测试通过不等于已完成真实 Thinka 设备导入验证。
+
+          ### 使用提醒
+          1. 解压 ZIP 后运行 Thinka_Excel_Converter.exe。
+          2. 首次默认输出根目录为桌面 Thinka文件，可以在软件中更改。
+          3. 批量复制设备后，请核对新设备 UUID 和配件组号；原始 Thinka CSV 不会被覆盖。
+          4. 建议先备份原始配置，并用少量设备进行 Thinka 导入测试。
+          '@
+          $notesPath = Join-Path $env:RUNNER_TEMP 'Thinka_v1.5.0-beta.1_release-notes.md'
+          [IO.File]::WriteAllText($notesPath, $notes, [Text.UTF8Encoding]::new($false))
+          $asset = ".\dist\Thinka_Excel_Converter_v1.5.0-beta.1_EXE.zip"
+          gh release create $tag $asset --title "Thinka Excel 转换工具 v1.5 测试版（Beta 1）" --notes-file $notesPath --prerelease --target $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) { throw "GitHub pre-release creation failed ($LASTEXITCODE)." }
+          Write-Host "Published GitHub pre-release $tag"
