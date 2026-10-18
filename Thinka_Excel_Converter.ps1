@@ -1070,7 +1070,7 @@ $grid.Columns[8].Visible=$false
 # stable so the editor continues to write to the correct original CSV cells.
 # Put the four most-used fields first; user can drag headers to customize.
 $script:columnLayoutPath=Join-Path $env:APPDATA 'ThinkaCsvConverter\column-order.txt'
-$script:defaultColumnOrder=@('c1','c2','c6','c7','c3','c4','c5','c0','c8')
+$script:defaultColumnOrder=@('c0','c1','c2','c6','c7','c3','c4','c5','c8')
 function Apply-ColumnOrder([string[]]$names) {
     $script:applyingColumnOrder=$true
     try {
@@ -1095,7 +1095,14 @@ $initialColumnOrder=[string[]]$script:defaultColumnOrder
 if([IO.File]::Exists($script:columnLayoutPath)) {
     try {
         $candidate=[string[]]@(([IO.File]::ReadAllText($script:columnLayoutPath)).Trim().Split(','))
-        if(Is-ValidColumnOrder $candidate) {$initialColumnOrder=$candidate}
+        if(Is-ValidColumnOrder $candidate) {
+            # Migrate the previous version's untouched default; keep customized
+            # drag-and-drop orders intact.
+            $oldDefault='c1,c2,c6,c7,c3,c4,c5,c0,c8'
+            if(($candidate -join ',') -cne $oldDefault) {
+                $initialColumnOrder=$candidate
+            }
+        }
     } catch {}
 }
 Apply-ColumnOrder $initialColumnOrder
@@ -1134,7 +1141,8 @@ function Show-Device {
         $node=$tree.SelectedNode
         $dt=New-Object System.Data.DataTable
         for($c=0;$c -lt 9;$c++) {
-            [void]$dt.Columns.Add(('Field'+$c),[string])
+            $dataType=if($c -eq 0){[int]}else{[string]}
+            [void]$dt.Columns.Add(('Field'+$c),$dataType)
         }
         $lookup=@{}
         $shown=0
@@ -1145,7 +1153,8 @@ function Show-Device {
                 }
                 $v=$rec.Values
                 $line=[string]$rec.Line
-                $cells=[object[]]@($line,$v[0],$v[2],$v[3],$v[4],$v[5],$v[6],$v[7],$v[1])
+                # Field0 must be an integer, otherwise sorting is lexical (18,19,2,3).
+                $cells=[object[]]@([int]$rec.Line,$v[0],$v[2],$v[3],$v[4],$v[5],$v[6],$v[7],$v[1])
                 [void]$dt.Rows.Add($cells)
                 $lookup[$line]=$rec
                 $shown++
@@ -1519,11 +1528,11 @@ if($GuiSmokeTest) {
            $grid.Columns['c7'].HeaderText -cne '控制组地址') {
             throw '常用字段的中文标题没有正确更新。'
         }
-        $preferred=[string[]]@('c1','c2','c6','c7')
+        $preferred=[string[]]@('c0','c1','c2','c6','c7')
         $seenOrder=Get-ColumnOrder
-        for($i=0;$i -lt 4;$i++) {
+        for($i=0;$i -lt $preferred.Count;$i++) {
             if($seenOrder[$i] -cne $preferred[$i]) {
-                throw '默认列顺序不是房间、设备名称、状态组地址、控制组地址。'
+                throw '默认列顺序不是原始行号、房间、设备名称、状态组地址、控制组地址。'
             }
         }
         $grid.Columns['c7'].DisplayIndex=0
@@ -1591,6 +1600,33 @@ if($GuiSmokeTest) {
             throw '列宽或文本换行设置没有生效。'
         }
         if((Normalize-Address '1 2 3') -cne '1/2/3') {throw '组地址空格输入转换失败。'}
+        # Numeric header-click sort regression: one-, two- and three-digit
+        # source row numbers must be compared as integers (not strings).
+        $signatureBeforeSorting=Record-Signature $script:project
+        $testTable=New-Object System.Data.DataTable
+        [void]$testTable.Columns.Add('Field0',[int])
+        for($i=1;$i -lt 9;$i++) {[void]$testTable.Columns.Add(('Field'+$i),[string])}
+        foreach($number in @(18,19,2,3,4,100)) {
+            $values=[object[]]::new(9)
+            $values[0]=[int]$number
+            for($i=1;$i -lt 9;$i++) {$values[$i]=''}
+            [void]$testTable.Rows.Add($values)
+        }
+        $grid.DataSource=$testTable
+        $grid.Sort($grid.Columns['c0'],[System.ComponentModel.ListSortDirection]::Ascending)
+        $ascending=@($grid.Rows | ForEach-Object {[int]$_.Cells[0].Value})
+        if(($ascending -join ',') -cne '2,3,4,18,19,100') {
+            throw ("原始行号升序排序异常："+($ascending -join ','))
+        }
+        $grid.Sort($grid.Columns['c0'],[System.ComponentModel.ListSortDirection]::Descending)
+        $descending=@($grid.Rows | ForEach-Object {[int]$_.Cells[0].Value})
+        if(($descending -join ',') -cne '100,19,18,4,3,2') {
+            throw ("原始行号降序排序异常："+($descending -join ','))
+        }
+        if((Record-Signature $script:project) -cne $signatureBeforeSorting) {
+            throw '仅按表格行号排序不应修改底层 Thinka 配置。'
+        }
+        Write-Host '原始行号排序自检通过：2,3,4,18,19,100（升序），100,19,18,4,3,2（降序）。'
         Write-Host 'GUI 自检通过：导入样本、房间树、设备详情和组地址规范化。'
         exit 0
     } catch {
