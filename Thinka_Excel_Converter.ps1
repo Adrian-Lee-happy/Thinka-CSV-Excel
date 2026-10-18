@@ -1014,6 +1014,7 @@ $advanced.Width=110
 $grid=New-Object Windows.Forms.DataGridView
 $grid.Dock='Fill'
 $grid.Margin=[Windows.Forms.Padding]::new(2,0,2,0)
+$grid.AllowUserToOrderColumns=$true
 $grid.AllowUserToResizeColumns=$true
 $grid.AllowUserToResizeRows=$true
 $grid.ScrollBars=[Windows.Forms.ScrollBars]::Both
@@ -1041,7 +1042,7 @@ $issueList=New-Object Windows.Forms.ListBox
 $issueList.Dock='Fill'
 $issueList.Margin=[Windows.Forms.Padding]::new(4,3,4,3)
 [void]$rightLayout.Controls.Add($issueList,0,3)
-foreach($name in @('原始行号','房间','服务名称','服务类型','特征 / 参数','特征 / 参数名称','读取组地址','写入组地址','配件 UUID')) {
+foreach($name in @('原始行号','房间','设备名称','服务类型','特征 / 参数','特征 / 参数名称','状态组地址','控制组地址','配件 UUID')) {
     [void]$grid.Columns.Add(('c'+$grid.Columns.Count),$name)
 }
 foreach($index in @(0,3,4,5)) {$grid.Columns[$index].ReadOnly=$true}
@@ -1065,6 +1066,48 @@ $grid.Add_DataError({
     $_.ThrowException=$false
 })
 $grid.Columns[8].Visible=$false
+# GUI display order is not the Thinka field order. Keep c0..c8 identities
+# stable so the editor continues to write to the correct original CSV cells.
+# Put the four most-used fields first; user can drag headers to customize.
+$script:columnLayoutPath=Join-Path $env:APPDATA 'ThinkaCsvConverter\column-order.txt'
+$script:defaultColumnOrder=@('c1','c2','c6','c7','c3','c4','c5','c0','c8')
+function Apply-ColumnOrder([string[]]$names) {
+    $script:applyingColumnOrder=$true
+    try {
+        for($position=$names.Count-1;$position -ge 0;$position--) {
+            $grid.Columns[$names[$position]].DisplayIndex=0
+        }
+    } finally {$script:applyingColumnOrder=$false}
+}
+function Get-ColumnOrder {
+    return ,([string[]]@($grid.Columns | Sort-Object DisplayIndex | ForEach-Object {$_.Name}))
+}
+function Is-ValidColumnOrder([string[]]$names) {
+    if($null -eq $names -or $names.Count -ne $grid.Columns.Count) {return $false}
+    $seen=@{}
+    foreach($n in $names) {
+        if(-not $grid.Columns.Contains($n) -or $seen.ContainsKey($n)) {return $false}
+        $seen[$n]=$true
+    }
+    return $true
+}
+$initialColumnOrder=[string[]]$script:defaultColumnOrder
+if([IO.File]::Exists($script:columnLayoutPath)) {
+    try {
+        $candidate=[string[]]@(([IO.File]::ReadAllText($script:columnLayoutPath)).Trim().Split(','))
+        if(Is-ValidColumnOrder $candidate) {$initialColumnOrder=$candidate}
+    } catch {}
+}
+Apply-ColumnOrder $initialColumnOrder
+$grid.Add_ColumnDisplayIndexChanged({
+    if($script:applyingColumnOrder -or $GuiSmokeTest) {return}
+    try {
+        $folder=Split-Path -Parent $script:columnLayoutPath
+        [void][IO.Directory]::CreateDirectory($folder)
+        $names=Get-ColumnOrder
+        [IO.File]::WriteAllText($script:columnLayoutPath,($names -join ','),[Text.UTF8Encoding]::new($false))
+    } catch {Write-Log ('保存表格列顺序失败：'+$_.Exception.Message)}
+})
 function Accessory-Key($rec) {
     $v=$rec.Values
     $prefix=$v[0]+[char]31
@@ -1470,6 +1513,25 @@ if($GuiSmokeTest) {
         if(-not $grid.ColumnHeadersVisible -or $grid.ColumnHeadersHeight -lt 35) {
             throw '参数标题行没有正确显示。'
         }
+        if(-not $grid.AllowUserToOrderColumns) {throw '表格不支持拖动标题调整列顺序。'}
+        if($grid.Columns['c2'].HeaderText -cne '设备名称' -or
+           $grid.Columns['c6'].HeaderText -cne '状态组地址' -or
+           $grid.Columns['c7'].HeaderText -cne '控制组地址') {
+            throw '常用字段的中文标题没有正确更新。'
+        }
+        $preferred=[string[]]@('c1','c2','c6','c7')
+        $seenOrder=Get-ColumnOrder
+        for($i=0;$i -lt 4;$i++) {
+            if($seenOrder[$i] -cne $preferred[$i]) {
+                throw '默认列顺序不是房间、设备名称、状态组地址、控制组地址。'
+            }
+        }
+        $grid.Columns['c7'].DisplayIndex=0
+        [Windows.Forms.Application]::DoEvents()
+        if($grid.Columns['c7'].DisplayIndex -ne 0 -or $grid.Columns['c6'].Index -ne 6) {
+            throw '拖动列显示顺序后，内部字段索引发生异常。'
+        }
+        Apply-ColumnOrder $script:defaultColumnOrder
         if(-not $grid.AllowUserToResizeColumns -or $grid.Columns[5].Resizable -ne [Windows.Forms.DataGridViewTriState]::True) {
             throw '列宽不能通过拖动表头分隔线调整。'
         }
